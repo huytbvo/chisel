@@ -174,12 +174,14 @@ object chiselMainTest {
 
 trait proc extends Node {
   var updates = new collection.mutable.ListBuffer[(Bool, Node)];
+  var genned = false
   def genCond() = conds.top;
   def genMuxes(default: Node, others: Seq[(Bool, Node)]): Unit = {
     val update = others.foldLeft(default)((v, u) => Multiplex(u._1, u._2, v))
     if (inputs.isEmpty) inputs += update else inputs(0) = update
   }
   def genMuxes(default: Node): Unit = {
+    if (genned) return
     if (updates.length == 0) {
       if (inputs.length == 0 || inputs(0) == null)
         ChiselErrors += ChiselError({"NO UPDATES ON " + this}, this)
@@ -194,6 +196,7 @@ trait proc extends Node {
       genMuxes(default, updates)
     else
       genMuxes(lastValue, updates.toList.tail)
+    genned = false
   }
   def procAssign(src: Node);
   procs += this;

@@ -464,6 +464,9 @@ class CppBackend extends Backend {
     c.inferAll();
     if(saveWidthWarnings)
       widthWriter = new java.io.FileWriter(base_name + c.name + ".width.warnings")
+    c.insertPipelineRegisters()
+    c.genAllMuxes
+    c.inferAll
     c.forceMatchingWidths;
     c.removeTypeNodes()
     if(!ChiselErrors.isEmpty){

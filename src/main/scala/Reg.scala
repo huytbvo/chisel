@@ -111,6 +111,7 @@ class Reg extends Delay with proc {
     updates += ((cond, src))
   }
   override def genMuxes(default: Node): Unit = {
+    if (genned) return
     if(isMemOutput) {
       inputs(0) = updates(0)._2
       return
@@ -124,6 +125,7 @@ class Reg extends Delay with proc {
       enableIndex = inputs.length - 1;
     } else
       super.genMuxes(default)
+    genned = false
   }
   def nameOpt: String = if (name.length > 0) name else "REG"
   override def toString: String = {

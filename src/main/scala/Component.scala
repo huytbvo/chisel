@@ -20,6 +20,7 @@ import Bundle._
 import ChiselError._
 
 object Component {
+  val pipeline = new ArrayBuffer[(Node, Bits)]()
   var resourceStream = getClass().getResourceAsStream("/emulator.h")
   var saveWidthWarnings = false
   var saveConnectionWarnings = false
@@ -514,6 +515,39 @@ abstract class Component(resetSignal: Bool = null) {
     println("start width checking")
     bfs(_.forceMatchingWidths)
     println("finished width checking")
+  }
+
+
+  def getConsumers() = {
+    val map = new HashMap[Node, ArrayBuffer[Node]]
+
+    def getConsumer(node: Node) = {
+      for (i <- node.inputs) {
+        if (!map.contains(i)) {
+          map += (i -> new ArrayBuffer[Node])
+        }
+        //if(!map(i).contains(node))
+          map(i) += node
+      }
+    }
+
+    bfs(getConsumer(_))
+    map
+  }
+
+  def insertPipelineRegisters() = {
+    val map = getConsumers()
+    for ((p, ind) <- (pipeline zip pipeline.indices)) {
+      val r = Reg(resetVal = p._2)
+      r := p._1.asInstanceOf[Bits]
+      r.name_it("Huy_" + ind, true)
+      val consumers = map(p._1)
+      for (c <- consumers) {
+        val ind = c.inputs.indexOf(p._1)
+        println(c.line.getLineNumber + " " + c.line.getFileName + " " + ind + " " + consumers.length)
+        if(ind > -1) c.inputs(ind) = r
+      }
+    }
   }
 
   def findConsumers() = {
