@@ -1,11 +1,21 @@
 package Chisel
 import scala.collection.mutable.ArrayBuffer
+import scala.collection.mutable.HashSet
 import scala.collection.mutable.Stack
 import scala.collection.mutable.{Queue=>ScalaQueue}
 import Component._
 import Literal._
 import Node._
 import ChiselError._
+
+// object write {
+//   val writes = new HashSet[Reg]()
+//   def isWrite(reg: Reg) = writes.contains(reg)
+//   def apply[T<:Data](reg: T, data: T, en: Bool) = {
+//     writes += reg.comp
+//     when(en) { reg := data }
+//   }
+// }
   
 object Enum {
   def apply(l: List[Symbol]) = (l zip (Range(0, l.length, 1).map(x => UFix(x, sizeof(l.length-1))))).toMap;

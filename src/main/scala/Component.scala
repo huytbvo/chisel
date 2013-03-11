@@ -20,7 +20,14 @@ import Bundle._
 import ChiselError._
 
 object Component {
-  val pipeline = new ArrayBuffer[(Node, Bits)]()
+  var pipeline = new HashMap[Int, ArrayBuffer[(Node, Bits)]]()
+  var pipelineReg = new HashMap[Int, ArrayBuffer[Reg]]()
+  def addPipeline(x: Int) = {
+    for (i <- 0 until x) {
+      pipeline += (i -> new ArrayBuffer[(Node, Bits)]())
+      pipelineReg += (i -> new ArrayBuffer[Reg]())
+    }
+  }
   var resourceStream = getClass().getResourceAsStream("/emulator.h")
   var saveWidthWarnings = false
   var saveConnectionWarnings = false
@@ -537,18 +544,28 @@ abstract class Component(resetSignal: Bool = null) {
 
   def insertPipelineRegisters() = {
     val map = getConsumers()
-    for ((p, ind) <- (pipeline zip pipeline.indices)) {
-      val r = Reg(resetVal = p._2)
-      r := p._1.asInstanceOf[Bits]
-      r.name_it("Huy_" + ind, true)
-      val consumers = map(p._1)
-      for (c <- consumers) {
-        val ind = c.inputs.indexOf(p._1)
-        println(c.line.getLineNumber + " " + c.line.getFileName + " " + ind + " " + consumers.length)
-        if(ind > -1) c.inputs(ind) = r
+    for(stage <- 0 until pipeline.size) {
+      for (p <- pipeline(stage)) {
+        val r = Reg(resetVal = p._2)
+        r := p._1.asInstanceOf[Bits]
+        r.name_it("Huy_" + stage, true)
+        pipelineReg(stage) += r.comp.asInstanceOf[Reg]
+        val consumers = map(p._1)
+        for (c <- consumers) {
+          val ind = c.inputs.indexOf(p._1)
+          println(c.line.getLineNumber + " " + c.line.getFileName + " " + ind + " " + consumers.length)
+          if(ind > -1) c.inputs(ind) = r
+        }
       }
     }
   }
+
+  // def fixUpdates() = {
+  //   def compare(x: (Bool, Node), y: (Bool, Node)) = stage(x._1) < stage(x._2)
+  //   for (w <- writes) {
+  //     w.updates = w.updates.sortWith(compare(_,_))
+  //   }
+  // }
 
   def findConsumers() = {
     for (m <- mods) {

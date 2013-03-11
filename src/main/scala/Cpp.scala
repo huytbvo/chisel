@@ -445,6 +445,7 @@ class CppBackend extends Backend {
     components.foreach(_.elaborate(0));
     for (c <- components)
       c.markComponent();
+    //c.fixUpdates()
     c.genAllMuxes;
     components.foreach(_.postMarkNet(0));
     val base_name = ensure_dir(targetDir)
