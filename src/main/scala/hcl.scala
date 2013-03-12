@@ -128,6 +128,7 @@ object chiselMain {
         case "--targetDir" => targetDir = args(i+1); i += 1;
         case "--include" => includeArgs = splitArg(args(i+1)); i += 1;
         case "--checkPorts" => isCheckingPorts = true
+        case "--colorStages" => colorStages = true
         case any => println("UNKNOWN CONSOLE ARG");
       }
       i += 1;
@@ -159,6 +160,7 @@ object chiselMain {
       tester = ftester(c)
     }
     backend.elaborate(c)
+    if (colorStages) c.colorPipelineStages()
     if (isCheckingPorts) backend.checkPorts(c)
     if (isCompiling && isGenHarness) backend.compile(c)
     if (isTesting) tester.tests()

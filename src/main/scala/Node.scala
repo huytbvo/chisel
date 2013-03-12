@@ -1,6 +1,7 @@
 package Chisel
 import scala.collection.mutable.ArrayBuffer
 import scala.collection.mutable.Stack
+import scala.collection.mutable.HashSet
 
 import Node._;
 import Component._;
@@ -162,7 +163,7 @@ abstract class Node extends nameable{
   def isUsedByRam: Boolean = {
     for (c <- consumers) 
       if (c.isRamWriteInput(this))
-	return true;
+  return true;
     return false;
   }
   def isRamWriteInput(i: Node) = false;
@@ -185,11 +186,11 @@ abstract class Node extends nameable{
     val res = inferWidth(this);
     if(inferCount > 1000000) {
       if(genError) {
-	val error = ChiselError({"Unable to infer width of " + this}, this);
+  val error = ChiselError({"Unable to infer width of " + this}, this);
         if (!ChiselErrors.contains(error))
           ChiselErrors += error
       } else
-	genError = true;
+  genError = true;
       return false;
     }
     if(res == -1) {
@@ -282,9 +283,9 @@ abstract class Node extends nameable{
           val j = i;
           val n = node;
           stack.push(() => {
-	    // This code finds an output binding for a node. We search for a binding only if the io is an output
-	    // and the logic's grandfather component is not the same as the io's component and
-	    // the logic's component is not same as output's component unless the logic is an input
+      // This code finds an output binding for a node. We search for a binding only if the io is an output
+      // and the logic's grandfather component is not the same as the io's component and
+      // the logic's component is not same as output's component unless the logic is an input
             n match { 
               case io: Bits => 
                 if (io.dir == OUTPUT && !io.isTypeNode &&
@@ -297,14 +298,14 @@ abstract class Node extends nameable{
                   if (!c.isWalked.contains(b)) {
                     c.mods += b;  c.isWalked += b;
                   }
-	        // In this case, we are trying to use the input of a submodule 
+          // In this case, we are trying to use the input of a submodule 
                 // as part of the logic outside of the submodule.
-	        // If the logic is outside the submodule, we do not use the input
-	        // name. Instead, we use whatever is driving the input. In other
-	        // words, we do not use the Input name, if the component of the
-	        // logic is the part of Input's component.
-	        // We also do the same when assigning to the output if the output
-	        // is the parent of the subcomponent;
+          // If the logic is outside the submodule, we do not use the input
+          // name. Instead, we use whatever is driving the input. In other
+          // words, we do not use the Input name, if the component of the
+          // logic is the part of Input's component.
+          // We also do the same when assigning to the output if the output
+          // is the parent of the subcomponent;
                 } else if (io.dir == INPUT && 
                            ((!this.isIo && this.component == io.component.parent) || 
                             (this.isInstanceOf[Bits] && this.asInstanceOf[Bits].dir == OUTPUT && 
@@ -381,7 +382,7 @@ abstract class Node extends nameable{
           ChiselErrors += error
       }
       else if(inputs(i).isTypeNode) {
-	inputs(i) = inputs(i).getNode;
+  inputs(i) = inputs(i).getNode;
       }
     }
   }
@@ -442,5 +443,11 @@ abstract class Node extends nameable{
       index = componentOf.nextIndex; 
     index 
   }
-
+  
+  //automatic pipeline generation stuff
+  
+  //returns updates list if node is a reg or bit;returns inputs list otherwise
+  def getProducers(): Seq[Node] = {
+    inputs
+  }
 }

@@ -152,4 +152,11 @@ class Reg extends Delay with proc {
       assigned = true; super.assign(src)
     }
   }
+  override def getProducers(): Seq[Node] = {
+    val producers = new collection.mutable.ListBuffer[Node];
+    for((i,j) <- updates){
+      producers += j
+    }
+    producers
+  }
 }

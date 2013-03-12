@@ -77,6 +77,8 @@ object Component {
   var stackIndent = 0;
   var printStackStruct = ArrayBuffer[(Int, Component)]();
   var firstComp = true;
+  //automatic pipelining stuff
+  var colorStages = false
   def genCompName(name: String): String = {
     moduleNamePrefix + (if (compIndices contains name) {
       val count = (compIndices(name) + 1)
@@ -140,7 +142,8 @@ object Component {
     isTesting = false;
     backend = new CppBackend
     topComponent = null;
-
+    //automatic pipelining stuff
+    colorStages = false
     conds.clear()
     conds.push(Bool(true))
   }
@@ -208,31 +211,31 @@ object Component {
       //println(elm.getClassName + " " + elm.getMethodName + " " + elm.getLineNumber);
       var skip = 3;
       for(elm <- st){
-	if(skip > 0) {
-	  skip -= 1;
-	} else {
-	  if(elm.getMethodName == "<init>") {
+  if(skip > 0) {
+    skip -= 1;
+  } else {
+    if(elm.getMethodName == "<init>") {
 
-	    val className = elm.getClassName;
+      val className = elm.getClassName;
 
-	    if(isSubclassOfComponent(Class.forName(className)) && !c.isSubclassOf(Class.forName(className))) {
+      if(isSubclassOfComponent(Class.forName(className)) && !c.isSubclassOf(Class.forName(className))) {
               if(saveComponentTrace)
-	        println("marking " +className+ " as parent of " + c.getClass);
-	      while(compStack.top.getClass != Class.forName(className)){
-		pop;
-	      }
+          println("marking " +className+ " as parent of " + c.getClass);
+        while(compStack.top.getClass != Class.forName(className)){
+    pop;
+        }
 
               val dad = compStack.top;
-	      c.parent = dad;
+        c.parent = dad;
               dad.children += c;
 
-	      compStack.push(c);
-	      stackIndent += 1;
-	      printStackStruct += ((stackIndent, c));
-	      return;
-	    }
-	  }
-	}
+        compStack.push(c);
+        stackIndent += 1;
+        printStackStruct += ((stackIndent, c));
+        return;
+      }
+    }
+  }
       }
     }
   }
@@ -253,7 +256,7 @@ object Component {
   def assignResets() {
     for(c <- components) {
       if(c.reset.inputs.length == 0 && c.parent != null)
-	c.reset.inputs += c.parent.reset
+  c.reset.inputs += c.parent.reset
     }
   }
 }
@@ -297,11 +300,11 @@ abstract class Component(resetSignal: Bool = null) {
     if(!child.named){
       Predef.assert(child.className != "")
       if(childNames contains child.className){
-	childNames(child.className)+=1;
-	child.instanceName = child.className + "_" + childNames(child.className);
+  childNames(child.className)+=1;
+  child.instanceName = child.className + "_" + childNames(child.className);
       } else {
-	childNames += (child.className -> 0);
-	child.instanceName = child.className;
+  childNames += (child.className -> 0);
+  child.instanceName = child.className;
       }
       child.named = true;
     }
@@ -474,18 +477,18 @@ abstract class Component(resetSignal: Bool = null) {
 
       var done = true;
       for(elm <- nodesList){
-	val updated = elm.infer
-  	done = done && !updated
-	//done = done && !(elm.infer) TODO: why is this line not the same as previous two?
+  val updated = elm.infer
+    done = done && !updated
+  //done = done && !(elm.infer) TODO: why is this line not the same as previous two?
       }
 
       count += 1
 
       if(done){
         verify
-  	println(count)
+    println(count)
         println("finished inference")
-  	return;
+    return;
       }
     }
     verify
@@ -499,7 +502,7 @@ abstract class Component(resetSignal: Bool = null) {
     def getNode(x: Node): Node = {
       var res = x
       while(res.isTypeNode && res.inputs.length != 0){
-	res = res.inputs(0)
+  res = res.inputs(0)
       }
       res
     }
@@ -559,6 +562,129 @@ abstract class Component(resetSignal: Bool = null) {
       }
     }
   }
+  //figures out which pipeline stage each node is in and returns the result as a hashmap of nodes -> stages
+  def colorPipelineStages(): HashMap[Node, Int] = {
+    println("coloring pipeline stages")
+    //map of nodes to consumers for use later
+    val consumerMap = getConsumers()
+    //set to keep track of nodes already traversed
+    val visited = new HashSet[Node]
+    //DFS stack
+    val dfsStack = new Stack[Node]
+    //HashSet to remember nodes along current dfs traversal that depend on their children to get resolved before they can get resolved
+    val unknowns = new HashSet[Node]
+    //HashMap of nodes -> stages that gets returned
+    val coloredNodes = new HashMap[Node, Int]
+    //checks to see if any of n's consumers have been resolved; returns the stage of n's resovled consumers and returns -1 if none of n's consumers have been resolved
+    def resolvedConsumerStage(n: Node): Int = {
+      var stageNumber = -1
+      if(consumerMap.contains(n)){
+        for(i <- consumerMap(n)){
+          if(coloredNodes.contains(i)){
+            stageNumber = coloredNodes(i)
+          }
+        }
+      }
+      stageNumber
+    }
+    //checks to see if any of n's producers have been resolved; returns the stage of n's resovled producers and returns -1 if none of n's producers have been resolved
+    def resolvedProducerStage(n: Node): Int = {
+      var stageNumber = -1
+      for(i <- n.getProducers()){
+        if(coloredNodes.contains(i)){
+          if(isPipeLineReg(i)){
+            //node n is in stage x+1 if its producer is a pipeline reg and is in stage x
+            stageNumber = coloredNodes(i) + 1
+          } else {
+            stageNumber = coloredNodes(i)
+          }
+        }
+      }
+      stageNumber
+    }
+    //function to set the stage of the user defined pipeline registers
+    def seedStageNumbers() = {
+      this.bfs((n: Node) => {
+        if(isPipeLineReg(n)){
+          coloredNodes(n) = findPipeLineRegStage(n)
+        }
+      })   
+    }
+    //checks if n is a user defined pipeline register
+    def isPipeLineReg(n: Node): Boolean = {
+      var result = false
+      for(i <- pipelineReg.values){
+        if(i.contains(n)){
+          result = true
+        }
+      }
+      result
+    }
+    //if n is a user defined pipeline register, return n's stage number
+    def findPipeLineRegStage(n: Node): Int = {
+      var result = -1
+      for(i <- pipelineReg.keys){
+        if(pipelineReg(i).contains(n)){
+          result = i
+        }
+      }
+      result
+    }
+    //do initial pass to to set the stage of the user defined pipeline registers in coloredNodes
+    seedStageNumbers()
+    //initialize dfsStack with graph roots
+    for(a <- asserts){
+      dfsStack.push(a)
+    }
+    for(b <- blackboxes){
+      dfsStack.push(b.io)
+    }
+    for(c <- components){
+      for((n, io) <- c.io.flatten){
+        dfsStack.push(io)
+      }
+    }
+    for(r <- resetList){
+      dfsStack.push(r)
+    }
+    println(coloredNodes)
+    //do dfs
+    while(!dfsStack.isEmpty){
+      //handle traversal
+      val currentNode = dfsStack.pop()
+      visited += currentNode
+      for(i <- currentNode.getProducers()){
+        if(!visited.contains(i)) {
+          dfsStack.push(i)
+          visited += i
+        }
+      }
+      //visit
+      //only need to do stuff if currentNode does not already have a stage number
+      if(!coloredNodes.contains(currentNode)){
+        val producerStageNum = resolvedProducerStage(currentNode)
+        val consumerStageNum = resolvedConsumerStage(currentNode)
+        if(producerStageNum > -1){//case if atleast one of currentNode's producers have a known stage number
+          coloredNodes(currentNode) = producerStageNum
+          for (i <- unknowns){
+            coloredNodes(i) = producerStageNum
+          }
+          unknowns.clear()
+        } else if(consumerStageNum > -1){//case if atleast one of currentNode's consumers have a known stage number
+          coloredNodes(currentNode) = consumerStageNum
+          for (i <- unknowns){
+            coloredNodes(i) = consumerStageNum
+          }
+          unknowns.clear()
+        } else {//case if none of currentNode's producers or consumers have known stage numbers
+          unknowns += currentNode
+        }
+      }
+    }
+    //println(coloredNodes)
+    coloredNodes
+  }
+
 
   // def fixUpdates() = {
   //   def compare(x: (Bool, Node), y: (Bool, Node)) = stage(x._1) < stage(x._2)
@@ -566,6 +692,7 @@ abstract class Component(resetSignal: Bool = null) {
   //     w.updates = w.updates.sortWith(compare(_,_))
   //   }
   // }
+
 
   def findConsumers() = {
     for (m <- mods) {
@@ -709,61 +836,61 @@ abstract class Component(resetSignal: Bool = null) {
         val o = m.invoke(this);
         o match { 
           case node: Node => { if ((node.isTypeNode || (node.name == "" && !node.named) || node.name == null || name != "")) node.name_it(name, true);
-			       if (node.isReg || node.isClkInput) containsReg = true;
-			      nameSpace += name;
-			    }
-	  case buf: ArrayBuffer[Node] => {
-	    var i = 0;
-	    if(!buf.isEmpty && buf(0).isInstanceOf[Node]){
-	      for(elm <- buf){
-		if ((elm.isTypeNode || (elm.name == "" && !elm.named) || elm.name == null)) 
-		  elm.name_it(name + "_" + i, true);
-		if (elm.isReg || elm.isClkInput) 
-		  containsReg = true;
-		nameSpace += name + "_" + i;
-		i += 1;
-	      }
-	    }
-	  }
+             if (node.isReg || node.isClkInput) containsReg = true;
+            nameSpace += name;
+          }
+    case buf: ArrayBuffer[Node] => {
+      var i = 0;
+      if(!buf.isEmpty && buf(0).isInstanceOf[Node]){
+        for(elm <- buf){
+    if ((elm.isTypeNode || (elm.name == "" && !elm.named) || elm.name == null)) 
+      elm.name_it(name + "_" + i, true);
+    if (elm.isReg || elm.isClkInput) 
+      containsReg = true;
+    nameSpace += name + "_" + i;
+    i += 1;
+        }
+      }
+    }
           // TODO: THIS CASE MAY NEVER MATCH
-	  case bufbuf: ArrayBuffer[ArrayBuffer[ _ ]] => {
-	    var i = 0;
-	    println(name);
-	    for(buf <- bufbuf){
-	      var j = 0;
-	      for(elm <- buf){
-		elm match {
-		  case node: Node => {
-		    if ((node.isTypeNode || (node.name == "" && !node.named) || node.name == null)) 
-		      node.name_it(name + "_" + i + "_" + j, true);
-		    if (node.isReg || node.isClkInput) 
-		      containsReg = true;
-		    nameSpace += name + "_" + i + "_" + j;
-		    j += 1;
-		  }
-		  case any =>
-		}
-	      }
-	      i += 1;
-	    }
-	  }
-	  case cell: Cell => { cell.name = name;
-			       cell.named = true;
-			      if(cell.isReg) containsReg = true;
-			      nameSpace += name;
-			    }
-	  case bb: BlackBox => {
+    case bufbuf: ArrayBuffer[ArrayBuffer[ _ ]] => {
+      var i = 0;
+      println(name);
+      for(buf <- bufbuf){
+        var j = 0;
+        for(elm <- buf){
+    elm match {
+      case node: Node => {
+        if ((node.isTypeNode || (node.name == "" && !node.named) || node.name == null)) 
+          node.name_it(name + "_" + i + "_" + j, true);
+        if (node.isReg || node.isClkInput) 
+          containsReg = true;
+        nameSpace += name + "_" + i + "_" + j;
+        j += 1;
+      }
+      case any =>
+    }
+        }
+        i += 1;
+      }
+    }
+    case cell: Cell => { cell.name = name;
+             cell.named = true;
+            if(cell.isReg) containsReg = true;
+            nameSpace += name;
+          }
+    case bb: BlackBox => {
             if(!bb.named) {bb.instanceName = name; bb.named = true};
             bb.pathParent = this;
             for((n, elm) <- io.flatten) {
               if (elm.isClkInput) containsReg = true
             }
-	    nameSpace += name;
+      nameSpace += name;
           }
-	  case comp: Component => {
+    case comp: Component => {
             if(!comp.named) {comp.instanceName = name; comp.named = true};
             comp.pathParent = this;
-	    nameSpace += name;
+      nameSpace += name;
           }
           case any =>
         }
@@ -791,7 +918,7 @@ abstract class Component(resetSignal: Bool = null) {
   def verifyAllMuxes = {
     for(m <- muxes) {
       if(m.inputs(0).width != 1 && m.component != null && (!isEmittingComponents || !m.component.isInstanceOf[BlackBox]))
-	ChiselErrors += ChiselError({"Mux " + m.name + " has " + m.inputs(0).width +"-bit selector " + m.inputs(0).name}, m);
+  ChiselErrors += ChiselError({"Mux " + m.name + " has " + m.inputs(0).width +"-bit selector " + m.inputs(0).name}, m);
     }
   }
   def elaborate(fake: Int = 0) = {}
