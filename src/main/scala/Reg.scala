@@ -98,6 +98,7 @@ class Reg extends Delay with proc {
   var isEnable = false;
   def isUpdate = !(updateVal == null);
   def update (x: Node) = { inputs(0) = x };
+  override def isReg = true
   var assigned = false;
   var enable = Bool(false);
   def procAssign(src: Node) = {

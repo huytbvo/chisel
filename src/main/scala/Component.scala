@@ -562,7 +562,161 @@ abstract class Component(resetSignal: Bool = null) {
       }
     }
   }
+  def colorPipelineStages(): HashMap[Node, Int] = {
+    println("coloring pipeline stages")
+    //map of nodes to consumers for use later
+    val consumerMap = getConsumers()
+    //set to keep track of nodes already traversed
+    val visited = new HashSet[Node]
+    //set to keep track of nodes that are write points
+    val writePoints = new HashSet[Node]
+    //set to keep track of unresolved nodes
+    val unresolvedNodes = new HashSet[Node]
+    //set to keep track of unresolved nodes in the previous iteration
+    var oldUnresolvedNodes = new HashSet[Node]
+    //bfsQueue 
+    val bfsQueue = new ScalaQueue[Node]
+    //HashMap of nodes -> stages that gets returned
+    val coloredNodes = new HashMap[Node, Int]
+    //checks to see if any of n's consumers have been resolved; returns the stage of n's resovled consumers and returns -1 if none of n's consumers have been resolved
+    def resolvedConsumerStage(n: Node): Int = {
+      var stageNumber = -1
+      if(consumerMap.contains(n)){
+        for(i <- consumerMap(n)){
+          if(coloredNodes.contains(i)){
+            stageNumber = coloredNodes(i)
+          }
+        }
+      }
+      stageNumber
+    }
+    //checks to see if any of n's producers have been resolved; returns the stage of n's resovled producers and returns -1 if none of n's producers have been resolved
+    def resolvedProducerStage(n: Node): Int = {
+      var stageNumber = -1
+      for(i <- n.getProducers()){
+        if(coloredNodes.contains(i)){
+          if(isPipeLineReg(i)){
+            //node n is in stage x+1 if its producer is a pipeline reg and is in stage x
+            stageNumber = coloredNodes(i) + 1
+          } else {
+            stageNumber = coloredNodes(i)
+          }
+        }
+      }
+      stageNumber
+    }
+    //function to set the stage of the user defined pipeline registers
+    def seedStageNumbers() = {
+      this.bfs((n: Node) => {
+        if(isPipeLineReg(n)){
+          coloredNodes(n) = findPipeLineRegStage(n)
+        }
+      })   
+    }
+    //checks if n is a user defined pipeline register
+    def isPipeLineReg(n: Node): Boolean = {
+      var result = false
+      for(i <- pipelineReg.values){
+        if(i.contains(n)){
+          result = true
+        }
+      }
+      result
+    }
+    //if n is a user defined pipeline register, return n's stage number
+    def findPipeLineRegStage(n: Node): Int = {
+      var result = -1
+      for(i <- pipelineReg.keys){
+        if(pipelineReg(i).contains(n)){
+          result = i
+        }
+      }
+      result
+    }
+    //do initial pass to to set the stage of the user defined pipeline registers in coloredNodes
+    seedStageNumbers()
+    //initialize bfs queue with pipeline registers
+    for(i <- pipelineReg.keys){
+      for(n <- pipelineReg(i)){
+        unresolvedNodes += n
+      }
+    }
+    println(coloredNodes)
+    while(!unresolvedNodes.isEmpty && !oldUnresolvedNodes.equals(unresolvedNodes)){
+      for(n <- unresolvedNodes){
+        bfsQueue.enqueue(n)
+      }
+      oldUnresolvedNodes = unresolvedNodes.clone()
+      unresolvedNodes.clear
+      visited.clear
+      while(!bfsQueue.isEmpty){
+        //handle traversal
+        val currentNode = bfsQueue.dequeue
+        visited += currentNode
+        for(i <- currentNode.getProducers()){
+          if(!visited.contains(i)) {
+            if(currentNode.isReg && !isPipeLineReg(currentNode)){
+              writePoints += i
+            }
+            bfsQueue.enqueue(i)
+            visited += i
+          }
+        }
+        if(consumerMap.contains(currentNode)){
+          for(i <- consumerMap(currentNode)){
+            if(!visited.contains(i)) {
+              bfsQueue.enqueue(i)
+              visited += i
+            }
+          }
+        }
+        //handle visit
+        //only need to do stuff if currentNode does not already have a stage number
+        if(!coloredNodes.contains(currentNode)){
+          val producerStageNum = resolvedProducerStage(currentNode)
+          val consumerStageNum = resolvedConsumerStage(currentNode)
+          if(currentNode.isReg && !isPipeLineReg(currentNode)){
+            if(consumerStageNum > -1){
+              coloredNodes(currentNode) = consumerStageNum
+            } else {
+              unresolvedNodes += currentNode
+            }
+          } else if(writePoints.contains(currentNode)){
+            if(producerStageNum > -1){
+              coloredNodes(currentNode) = producerStageNum
+            } else {
+              unresolvedNodes += currentNode
+            }
+          } else {
+            if(producerStageNum > -1){
+              coloredNodes(currentNode) = producerStageNum
+            } else if(consumerStageNum > -1){
+              coloredNodes(currentNode) = consumerStageNum
+            } else {
+              unresolvedNodes += currentNode
+            }
+          }       
+        }
+      }
+    }
+    for(p <- procs){
+      if(p.name == "Top_SodorTile_cpu_d__exception_target"){
+        println(coloredNodes(p))
+      }
+      if(p.name == "Top_SodorTile_cpu_d_pcr__reg_epc"){
+        println(coloredNodes(p))
+      }
+      if(p.name == "Top_SodorTile_cpu_d_pcr__reg_ebase"){
+        println(coloredNodes(p))
+      }
+      if(p.name == "Top_SodorTile_cpu_c__io_ctl_pc_sel"){
+        println(coloredNodes(p))
+      }
+    }
+    coloredNodes
+  }
   //figures out which pipeline stage each node is in and returns the result as a hashmap of nodes -> stages
+  /*
   def colorPipelineStages(): HashMap[Node, Int] = {
     println("coloring pipeline stages")
     //map of nodes to consumers for use later
@@ -684,7 +838,7 @@ abstract class Component(resetSignal: Bool = null) {
     //println(coloredNodes)
     coloredNodes
   }
-
+  */
 
   // def fixUpdates() = {
   //   def compare(x: (Bool, Node), y: (Bool, Node)) = stage(x._1) < stage(x._2)

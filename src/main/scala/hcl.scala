@@ -160,9 +160,9 @@ object chiselMain {
       tester = ftester(c)
     }
     backend.elaborate(c)
-    if (colorStages) c.colorPipelineStages()
     if (isCheckingPorts) backend.checkPorts(c)
     if (isCompiling && isGenHarness) backend.compile(c)
+    if (colorStages) c.colorPipelineStages()
     if (isTesting) tester.tests()
     c
   }
