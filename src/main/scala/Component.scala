@@ -20,6 +20,7 @@ import Bundle._
 import ChiselError._
 
 object Component {
+  var stalls = new ArrayBuffer[Bool]()
   var pipeline = new HashMap[Int, ArrayBuffer[(Node, Bits)]]()
   var pipelineReg = new HashMap[Int, ArrayBuffer[Reg]]()
   def addPipeline(x: Int) = {
@@ -43,6 +44,7 @@ object Component {
   var isVCD = false;
   var isInlineMem = true;
   var isFolding = true;
+  var huy = false;
   var isGenHarness = false;
   var isReportDims = false;
   var moduleNamePrefix = ""
@@ -142,7 +144,6 @@ object Component {
     isTesting = false;
     backend = new CppBackend
     topComponent = null;
-    //automatic pipelining stuff
     colorStages = false
     conds.clear()
     conds.push(Bool(true))
@@ -435,9 +436,9 @@ abstract class Component(resetSignal: Bool = null) {
     res
   }
 
-  def bfs(visit: Node => Unit): Unit = {
+  def bfs(visit: Node => Unit, queue: ScalaQueue[Node] = null): Unit = {
     val walked = new HashSet[Node]
-    val bfsQueue = initializeBFS
+    val bfsQueue = (if(queue == null) initializeBFS else queue)
 
     // conduct bfs to find all reachable nodes
     while(!bfsQueue.isEmpty){
@@ -548,20 +549,20 @@ abstract class Component(resetSignal: Bool = null) {
   def insertPipelineRegisters() = {
     val map = getConsumers()
     for(stage <- 0 until pipeline.size) {
-      for (p <- pipeline(stage)) {
+      for ((p, enum) <- pipeline(stage) zip pipeline(stage).indices) {
         val r = Reg(resetVal = p._2)
         r := p._1.asInstanceOf[Bits]
-        r.name_it("Huy_" + stage, true)
+        r.name_it("Huy_" + enum, true)
         pipelineReg(stage) += r.comp.asInstanceOf[Reg]
         val consumers = map(p._1)
         for (c <- consumers) {
           val ind = c.inputs.indexOf(p._1)
-          println(c.line.getLineNumber + " " + c.line.getFileName + " " + ind + " " + consumers.length)
           if(ind > -1) c.inputs(ind) = r
         }
       }
     }
   }
+
   def colorPipelineStages(): HashMap[Node, Int] = {
     println("coloring pipeline stages")
     //map of nodes to consumers for use later
@@ -699,146 +700,51 @@ abstract class Component(resetSignal: Bool = null) {
         }
       }
     }
-    for(p <- procs){
-      if(p.name == "Top_SodorTile_cpu_d__exception_target"){
-        println(coloredNodes(p))
-      }
-      if(p.name == "Top_SodorTile_cpu_d_pcr__reg_epc"){
-        println(coloredNodes(p))
-      }
-      if(p.name == "Top_SodorTile_cpu_d_pcr__reg_ebase"){
-        println(coloredNodes(p))
-      }
-      if(p.name == "Top_SodorTile_cpu_c__io_ctl_pc_sel"){
-        println(coloredNodes(p))
-      }
-    }
+
     coloredNodes
   }
-  //figures out which pipeline stage each node is in and returns the result as a hashmap of nodes -> stages
-  /*
-  def colorPipelineStages(): HashMap[Node, Int] = {
-    println("coloring pipeline stages")
-    //map of nodes to consumers for use later
+
+  def findHazards(): Bool = {
+    val stages = colorPipelineStages()
     val consumerMap = getConsumers()
-    //set to keep track of nodes already traversed
-    val visited = new HashSet[Node]
-    //DFS stack
-    val dfsStack = new Stack[Node]
-    //HashSet to remember nodes along current dfs traversal that depend on their children to get resolved before they can get resolved
-    val unknowns = new HashSet[Node]
-    //HashMap of nodes -> stages that gets returned
-    val coloredNodes = new HashMap[Node, Int]
-    //checks to see if any of n's consumers have been resolved; returns the stage of n's resovled consumers and returns -1 if none of n's consumers have been resolved
-    def resolvedConsumerStage(n: Node): Int = {
-      var stageNumber = -1
-      if(consumerMap.contains(n)){
-        for(i <- consumerMap(n)){
-          if(coloredNodes.contains(i)){
-            stageNumber = coloredNodes(i)
+    var kill = Bool(false)
+    def getStage(n: Node): Int = {
+      if (stages.contains(n))
+        return stages(n)
+      else
+        return -1
+    }
+    def compare(x: (Bool, Node), y: (Bool, Node)) = {
+      if (x._1.isTrue)
+        -1 < stages(y._1)
+      else
+        stages(x._1) < stages(y._1)
+    }
+    for (p <- procs) {
+      if (p.isInstanceOf[Reg] && p.updates.length > 1 && stages.contains(p)) {
+        p.updates = p.updates.sortWith(compare(_,_))
+        p.genned = false
+        for (u <- p.updates) {
+          if (getStage(u._1) > getStage(p) || getStage(u._2) > getStage(p)) {
+            kill = kill || u._1
+            println("found hazard " + u._1.line.getLineNumber + " " + u._1.line.getClassName)
           }
         }
       }
-      stageNumber
     }
-    //checks to see if any of n's producers have been resolved; returns the stage of n's resovled producers and returns -1 if none of n's producers have been resolved
-    def resolvedProducerStage(n: Node): Int = {
-      var stageNumber = -1
-      for(i <- n.getProducers()){
-        if(coloredNodes.contains(i)){
-          if(isPipeLineReg(i)){
-            //node n is in stage x+1 if its producer is a pipeline reg and is in stage x
-            stageNumber = coloredNodes(i) + 1
-          } else {
-            stageNumber = coloredNodes(i)
-          }
-        }
-      }
-      stageNumber
-    }
-    //function to set the stage of the user defined pipeline registers
-    def seedStageNumbers() = {
-      this.bfs((n: Node) => {
-        if(isPipeLineReg(n)){
-          coloredNodes(n) = findPipeLineRegStage(n)
-        }
-      })   
-    }
-    //checks if n is a user defined pipeline register
-    def isPipeLineReg(n: Node): Boolean = {
-      var result = false
-      for(i <- pipelineReg.values){
-        if(i.contains(n)){
-          result = true
-        }
-      }
-      result
-    }
-    //if n is a user defined pipeline register, return n's stage number
-    def findPipeLineRegStage(n: Node): Int = {
-      var result = -1
-      for(i <- pipelineReg.keys){
-        if(pipelineReg(i).contains(n)){
-          result = i
-        }
-      }
-      result
-    }
-    //do initial pass to to set the stage of the user defined pipeline registers in coloredNodes
-    seedStageNumbers()
-    //initialize dfsStack with graph roots
-    for(a <- asserts){
-      dfsStack.push(a)
-    }
-    for(b <- blackboxes){
-      dfsStack.push(b.io)
-    }
-    for(c <- components){
-      for((n, io) <- c.io.flatten){
-        dfsStack.push(io)
-      }
-    }
-    for(r <- resetList){
-      dfsStack.push(r)
-    }
-    println(coloredNodes)
-    //do dfs
-    while(!dfsStack.isEmpty){
-      //handle traversal
-      val currentNode = dfsStack.pop()
-      visited += currentNode
-      for(i <- currentNode.getProducers()){
-        if(!visited.contains(i)) {
-          dfsStack.push(i)
-          visited += i
-        }
-      }
-      //visit
-      //only need to do stuff if currentNode does not already have a stage number
-      if(!coloredNodes.contains(currentNode)){
-        val producerStageNum = resolvedProducerStage(currentNode)
-        val consumerStageNum = resolvedConsumerStage(currentNode)
-        if(producerStageNum > -1){//case if atleast one of currentNode's producers have a known stage number
-          coloredNodes(currentNode) = producerStageNum
-          for (i <- unknowns){
-            coloredNodes(i) = producerStageNum
-          }
-          unknowns.clear()
-        } else if(consumerStageNum > -1){//case if atleast one of currentNode's consumers have a known stage number
-          coloredNodes(currentNode) = consumerStageNum
-          for (i <- unknowns){
-            coloredNodes(i) = consumerStageNum
-          }
-          unknowns.clear()
-        } else {//case if none of currentNode's producers or consumers have known stage numbers
-          unknowns += currentNode
-        }
-      }
-    }
-    //println(coloredNodes)
-    coloredNodes
+    return kill
   }
-  */
+
+  def insertBubble(kill: Bool) = {
+    for (stage <- 0 until pipelineReg.size) {
+      for (r <- pipelineReg(stage)) {
+        val stall = stalls.reduceLeft(_ || _)
+        r.updates += ((stall, r))
+        r.updates += ((kill, r.resetVal))
+        r.genned = false
+      }
+    }
+  }
 
   // def fixUpdates() = {
   //   def compare(x: (Bool, Node), y: (Bool, Node)) = stage(x._1) < stage(x._2)

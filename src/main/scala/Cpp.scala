@@ -445,7 +445,6 @@ class CppBackend extends Backend {
     components.foreach(_.elaborate(0));
     for (c <- components)
       c.markComponent();
-    //c.fixUpdates()
     c.genAllMuxes;
     components.foreach(_.postMarkNet(0));
     val base_name = ensure_dir(targetDir)
@@ -466,6 +465,8 @@ class CppBackend extends Backend {
     if(saveWidthWarnings)
       widthWriter = new java.io.FileWriter(base_name + c.name + ".width.warnings")
     c.insertPipelineRegisters()
+    c.genAllMuxes
+    c.insertBubble(c.findHazards())
     c.genAllMuxes
     c.inferAll
     c.forceMatchingWidths;

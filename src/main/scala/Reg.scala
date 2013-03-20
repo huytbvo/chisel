@@ -120,13 +120,13 @@ class Reg extends Delay with proc {
     if(isEnable){
       // hack to force the muxes to match the Reg's width:
       // the intent is u = updates.head._2
-      val u = new Mux().init("", maxWidth _, Bool(true), updates.head._2, this)
-      genMuxes(u, updates.toList.tail)
+      // val u = new Mux().init("", maxWidth _, Bool(true), updates.head._2, this)
+      genMuxes(updates.head._2, updates.toList.tail)
       inputs += enable;
       enableIndex = inputs.length - 1;
     } else
       super.genMuxes(default)
-    genned = false
+    genned = true
   }
   def nameOpt: String = if (name.length > 0) name else "REG"
   override def toString: String = {
@@ -156,8 +156,17 @@ class Reg extends Delay with proc {
   override def getProducers(): Seq[Node] = {
     val producers = new collection.mutable.ListBuffer[Node];
     for((i,j) <- updates){
+      producers += i
       producers += j
     }
+    for(elm <- inputs){
+      if (elm != null) producers += elm
+    }
     producers
+  }
+
+  override def forceMatchingWidths = {
+    if (inputs(0).width != width) inputs(0) = inputs(0).matchWidth(width)
+    if (inputs.length > 1 && inputs(1).width != width) inputs(1) = inputs(1).matchWidth(width)
   }
 }

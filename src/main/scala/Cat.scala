@@ -22,12 +22,14 @@ class Cat extends Node {
 }
 
 object Concatenate {
-  def apply (mod: Node, mods: Node*): Node = 
-    if(backend.isInstanceOf[VerilogBackend]) {
+  def apply (mod: Node, mods: Node*): Node = {
+    val isLit = isFolding && mods.toList.forall(_.litOf != null)
+    if(!isLit && backend.isInstanceOf[VerilogBackend]) {
       val res = new Cat();
       res.initOf("", sumWidth _, mod :: mods.toList);
       res
     } else
       mods.foldLeft(mod){(a, b) => a ## b};
+  }
 }
 
