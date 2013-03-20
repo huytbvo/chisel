@@ -444,9 +444,6 @@ abstract class Node extends nameable{
     index 
   }
   
-  //automatic pipeline generation stuff
-  
-  //returns updates list if node is a reg or bit;returns inputs list otherwise
   def getProducers(): Seq[Node] = {
     inputs
   }

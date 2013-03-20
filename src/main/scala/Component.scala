@@ -20,6 +20,7 @@ import Bundle._
 import ChiselError._
 
 object Component {
+  var stalls = new ArrayBuffer[Bool]()
   var pipeline = new HashMap[Int, ArrayBuffer[(Node, Bits)]]()
   var pipelineReg = new HashMap[Int, ArrayBuffer[Reg]]()
   def addPipeline(x: Int) = {
@@ -43,6 +44,7 @@ object Component {
   var isVCD = false;
   var isInlineMem = true;
   var isFolding = true;
+  var huy = false;
   var isGenHarness = false;
   var isReportDims = false;
   var moduleNamePrefix = ""
@@ -142,7 +144,6 @@ object Component {
     isTesting = false;
     backend = new CppBackend
     topComponent = null;
-    //automatic pipelining stuff
     colorStages = false
     conds.clear()
     conds.push(Bool(true))
@@ -435,9 +436,9 @@ abstract class Component(resetSignal: Bool = null) {
     res
   }
 
-  def bfs(visit: Node => Unit): Unit = {
+  def bfs(visit: Node => Unit, queue: ScalaQueue[Node] = null): Unit = {
     val walked = new HashSet[Node]
-    val bfsQueue = initializeBFS
+    val bfsQueue = (if(queue == null) initializeBFS else queue)
 
     // conduct bfs to find all reachable nodes
     while(!bfsQueue.isEmpty){
@@ -548,20 +549,20 @@ abstract class Component(resetSignal: Bool = null) {
   def insertPipelineRegisters() = {
     val map = getConsumers()
     for(stage <- 0 until pipeline.size) {
-      for (p <- pipeline(stage)) {
+      for ((p, enum) <- pipeline(stage) zip pipeline(stage).indices) {
         val r = Reg(resetVal = p._2)
         r := p._1.asInstanceOf[Bits]
-        r.name_it("Huy_" + stage, true)
+        r.name_it("Huy_" + enum, true)
         pipelineReg(stage) += r.comp.asInstanceOf[Reg]
         val consumers = map(p._1)
         for (c <- consumers) {
           val ind = c.inputs.indexOf(p._1)
-          println(c.line.getLineNumber + " " + c.line.getFileName + " " + ind + " " + consumers.length)
           if(ind > -1) c.inputs(ind) = r
         }
       }
     }
   }
+
   def colorPipelineStages(): HashMap[Node, Int] = {
     println("coloring pipeline stages")
     //map of nodes to consumers for use later
@@ -696,7 +697,49 @@ abstract class Component(resetSignal: Bool = null) {
       }
     }
     coloredNodes
-  }    
+  }
+
+  def findHazards(): Bool = {
+    val stages = colorPipelineStages()
+    val consumerMap = getConsumers()
+    var kill = Bool(false)
+    def getStage(n: Node): Int = {
+      if (stages.contains(n))
+        return stages(n)
+      else
+        return -1
+    }
+    def compare(x: (Bool, Node), y: (Bool, Node)) = {
+      if (x._1.isTrue)
+        -1 < stages(y._1)
+      else
+        stages(x._1) < stages(y._1)
+    }
+    for (p <- procs) {
+      if (p.isInstanceOf[Reg] && p.updates.length > 1 && stages.contains(p)) {
+        p.updates = p.updates.sortWith(compare(_,_))
+        p.genned = false
+        for (u <- p.updates) {
+          if (getStage(u._1) > getStage(p) || getStage(u._2) > getStage(p)) {
+            kill = kill || u._1
+            println("found hazard " + u._1.line.getLineNumber + " " + u._1.line.getClassName)
+          }
+        }
+      }
+    }
+    return kill
+  }
+
+  def insertBubble(kill: Bool) = {
+    for (stage <- 0 until pipelineReg.size) {
+      for (r <- pipelineReg(stage)) {
+        val stall = stalls.reduceLeft(_ || _)
+        r.updates += ((stall, r))
+        r.updates += ((kill, r.resetVal))
+        r.genned = false
+      }
+    }
+  }
 
   // def fixUpdates() = {
   //   def compare(x: (Bool, Node), y: (Bool, Node)) = stage(x._1) < stage(x._2)

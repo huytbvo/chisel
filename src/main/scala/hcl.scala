@@ -208,7 +208,7 @@ trait proc extends Node {
       genMuxes(default, updates)
     else
       genMuxes(lastValue, updates.toList.tail)
-    genned = false
+    genned = true
   }
   def procAssign(src: Node);
   procs += this;
