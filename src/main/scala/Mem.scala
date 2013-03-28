@@ -35,7 +35,8 @@ class Mem[T <: Data](val n: Int, val seqRead: Boolean, gen: () => T) extends Acc
   val reads = ArrayBuffer[MemRead]()
   val readwrites = ArrayBuffer[MemReadWrite]()
   val data = gen().toNode
-
+  override def isMem = true
+  
   inferWidth = fixWidth(data.getWidth)
 
   private val readPortCache = HashMap[Bits, T]()

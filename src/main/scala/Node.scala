@@ -160,6 +160,7 @@ abstract class Node extends nameable{
   def getLit = this.asInstanceOf[Literal]
   def isIo = false;
   def isReg = false;
+  def isMem = false;
   def isUsedByRam: Boolean = {
     for (c <- consumers) 
       if (c.isRamWriteInput(this))
