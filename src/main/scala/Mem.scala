@@ -45,14 +45,26 @@ class Mem[T <: Data](val n: Int, val seqRead: Boolean, gen: () => T) extends Acc
       return readPortCache(addr)
 
     val addrIsReg = addr.isInstanceOf[Bits] && addr.inputs.length == 1 && addr.inputs(0).isInstanceOf[Reg]
-    val rd = if (seqRead && !Component.isInlineMem && addrIsReg)
+    /*val rd = if (seqRead && !Component.isInlineMem && addrIsReg)
       (seqreads += new MemSeqRead(this, addr.inputs(0))).last
     else
-      (reads += new MemRead(this, addr)).last
+      (reads += new MemRead(this, addr)).last*/
+    var rd:MemAccess = null
+    var data:T = null.asInstanceOf[T]
+    if (seqRead && !Component.isInlineMem && addrIsReg) {
+      rd = (seqreads += new MemSeqRead(this, addr.inputs(0))).last
+      data = gen().fromNode(rd).asInstanceOf[T]
+      rd.asInstanceOf[MemSeqRead].dataOut = data
+    } else {
+      rd = (reads += new MemRead(this, addr)).last
+      data = gen().fromNode(rd).asInstanceOf[T]
+      rd.asInstanceOf[MemRead].dataOut = data
+    }
 
-    val data = gen().fromNode(rd).asInstanceOf[T]
+    //val data = gen().fromNode(rd).asInstanceOf[T]
     data.setIsTypeNode
     readPortCache += (addr -> data)
+    //rd.dataOut = data
     data
   }
 
@@ -131,7 +143,7 @@ abstract class MemAccess(val mem: Mem[_], addri: Node) extends Node {
 
 class MemRead(mem: Mem[_], addri: Node) extends MemAccess(mem, addri) {
   override def cond = Bool(true)
-
+  var dataOut:Node = _
   inputs += mem
   inferWidth = fixWidth(mem.data.getWidth)
 
@@ -141,6 +153,7 @@ class MemRead(mem: Mem[_], addri: Node) extends MemAccess(mem, addri) {
 
 class MemSeqRead(mem: Mem[_], addri: Node) extends MemAccess(mem, addri) {
   val addrReg = addri.asInstanceOf[Reg]
+  var dataOut:Node = _
   override def cond = if (addrReg.isEnable) addrReg.enableSignal else Bool(true)
   override def isReg = true
   override def addr = inputs(2)

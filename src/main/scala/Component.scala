@@ -881,6 +881,26 @@ abstract class Component(resetSignal: Bool = null) {
         }
       }
     }
+    this.bfs((n: Node) => {
+      if(n.isMem){
+        if(n.line.getClassName.toString == "Sodor.DatPath"){
+          println("mem found " + n.line.getLineNumber + " " + n.line.getClassName)
+          for(i <- n.asInstanceOf[Mem[Data]].reads){
+            println("read ports")
+            println(getStage(i.addr))
+            println(getStage(i.dataOut))
+          }
+          for(i <- n.asInstanceOf[Mem[Data]].writes){
+            println("write ports")
+            println(getStage(i.addr))
+            println(getStage(i.inputs(1)))
+            println(getStage(i.inputs(2)))
+          }
+        }
+      }
+    })
+
+    
     return kill
   }
 
