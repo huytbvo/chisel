@@ -40,15 +40,13 @@ class Mem[T <: Data](val n: Int, val seqRead: Boolean, gen: () => T) extends Acc
   inferWidth = fixWidth(data.getWidth)
 
   private val readPortCache = HashMap[Bits, T]()
-  def doRead(addr: Bits): T = {
+  def doRead(addr: Bits, putativeWrite: PutativeMemWrite = null): T = {
+    
     if (readPortCache.contains(addr))
       return readPortCache(addr)
 
     val addrIsReg = addr.isInstanceOf[Bits] && addr.inputs.length == 1 && addr.inputs(0).isInstanceOf[Reg]
-    /*val rd = if (seqRead && !Component.isInlineMem && addrIsReg)
-      (seqreads += new MemSeqRead(this, addr.inputs(0))).last
-    else
-      (reads += new MemRead(this, addr)).last*/
+    
     var rd:MemAccess = null
     var data:T = null.asInstanceOf[T]
     if (seqRead && !Component.isInlineMem && addrIsReg) {
@@ -60,11 +58,11 @@ class Mem[T <: Data](val n: Int, val seqRead: Boolean, gen: () => T) extends Acc
       data = gen().fromNode(rd).asInstanceOf[T]
       rd.asInstanceOf[MemRead].dataOut = data
     }
-
-    //val data = gen().fromNode(rd).asInstanceOf[T]
+    if(putativeWrite != null){
+      putativeWrite.associatedMemRead = rd
+    }
     data.setIsTypeNode
     readPortCache += (addr -> data)
-    //rd.dataOut = data
     data
   }
 
@@ -101,8 +99,9 @@ class Mem[T <: Data](val n: Int, val seqRead: Boolean, gen: () => T) extends Acc
   def write(addr: Bits, data: T, wmask: Bits) = doWrite(addr, conds.top, data.toBits, wmask)
 
   def apply(addr: Bits) = {
-    val rdata = doRead(addr)
-    rdata.comp = new PutativeMemWrite(this, addr)
+    val putativeWrite = new PutativeMemWrite(this, addr)
+    val rdata = doRead(addr, putativeWrite)
+    rdata.comp = putativeWrite
     rdata
   }
 
@@ -173,8 +172,16 @@ class MemSeqRead(mem: Mem[_], addri: Node) extends MemAccess(mem, addri) {
 }
 
 class PutativeMemWrite(mem: Mem[_], addri: Bits) extends Node with proc {
-  override def procAssign(src: Node) =
+  var associatedMemRead:MemAccess = _
+  override def procAssign(src: Node) = {
+    if(mem.reads.contains(associatedMemRead)){
+      mem.reads -= associatedMemRead.asInstanceOf[MemRead]
+    }
+    if(mem.seqreads.contains(associatedMemRead)){
+      mem.seqreads -= associatedMemRead.asInstanceOf[MemSeqRead]
+    }
     mem.doWrite(addri, conds.top, src, null.asInstanceOf[Bits])
+  }
 }
 
 class MemReadWrite(val read: MemSeqRead, val write: MemWrite) extends MemAccess(read.mem, null)
