@@ -20,15 +20,22 @@ import Bundle._
 import ChiselError._
 
 object Component {
-  var stalls = new ArrayBuffer[Bool]()
+  // automatic pipeline stuff
   var pipeline = new HashMap[Int, ArrayBuffer[(Node, Bits)]]()
   var pipelineReg = new HashMap[Int, ArrayBuffer[Reg]]()
   def addPipeline(x: Int) = {
     for (i <- 0 until x) {
       pipeline += (i -> new ArrayBuffer[(Node, Bits)]())
       pipelineReg += (i -> new ArrayBuffer[Reg]())
+      stalls += (i -> new ArrayBuffer[Bool])
+      kills += (i -> new ArrayBuffer[Bool])
     }
   }
+  val tcomponents = new ArrayBuffer[TransactionalComponent]()
+  val valids = new HashMap[Int, Bool()]
+  val stalls = new HashMap[Int, ArrayBuffer[Bool()]]
+  val kills = new HashMap[Int, ArrayBuffer[Bool()]]
+
   var resourceStream = getClass().getResourceAsStream("/emulator.h")
   var saveWidthWarnings = false
   var saveConnectionWarnings = false
@@ -44,7 +51,6 @@ object Component {
   var isVCD = false;
   var isInlineMem = true;
   var isFolding = true;
-  var huy = false;
   var isGenHarness = false;
   var isReportDims = false;
   var moduleNamePrefix = ""
@@ -549,6 +555,9 @@ abstract class Component(resetSignal: Bool = null) {
   def insertPipelineRegisters() = {
     val map = getConsumers()
     for(stage <- 0 until pipeline.size) {
+      val valid = Reg(resetVal = Bool(false))
+      valid(stage) += valid
+      if (stage > 0) valid := valids(stage-1)
       for ((p, enum) <- pipeline(stage) zip pipeline(stage).indices) {
         val r = Reg(resetVal = p._2)
         r := p._1.asInstanceOf[Bits]
@@ -855,32 +864,49 @@ abstract class Component(resetSignal: Bool = null) {
 
   def findHazards(): Bool = {
     val stages = colorPipelineStages()
-    val consumerMap = getConsumers()
-    var kill = Bool(false)
     def getStage(n: Node): Int = {
       if (stages.contains(n))
         return stages(n)
       else
         return -1
     }
-    def compare(x: (Bool, Node), y: (Bool, Node)) = {
-      if (x._1.isTrue)
-        -1 < stages(y._1)
-      else
-        stages(x._1) < stages(y._1)
+
+    // handshaking stalls
+    for (tc <- tcomponents) {
+      val stall = !tc.req_ready && tc.io.req_valid
+      val kill = !tc.resp_valid
+      assert(stage(tc.req_ready) == stage(tc.io.req_valid))
+      val stallStage = max(stage(tc.req_ready), stage(tc.io.req_valid))
+      val killStage = stage(tc.resp_valid)
+      stalls(stallStage) += stall
+      kills((killStage) += kill
     }
+
+    // raw stalls
     for (p <- procs) {
-      if (p.isInstanceOf[Reg] && p.updates.length > 1 && stages.contains(p)) {
-        p.updates = p.updates.sortWith(compare(_,_))
-        p.genned = false
-        for (u <- p.updates) {
-          if (getStage(u._1) > getStage(p) || getStage(u._2) > getStage(p)) {
-            kill = kill || u._1
+      if (p.isInstanceOf[Reg] && p.udates.length > 1 && stages.contains(p)) {
+        val enables = u.updates.map(_.1)
+        val enStgs = enables.map(stages(_)).filter(_ > -1)
+        val stage = enStgs.head
+        assert(enStgs.tail.map( _ == stage).reduceLeft(_ && _)) // check all the stgs match
+        val hazard = Bool(false)
+        val foundHazard = false
+        val rdStg = stage(p)
+        for ((en, wrStg) <- enables zip enStgs) {
+          if (wrStg > rdStg) {
+            assert((wrStg - rdStg) == 1)
+            hazard = hazard || en
+            foundHazard = true
             println("found hazard " + u._1.line.getLineNumber + " " + u._1.line.getClassName)
           }
         }
+        if(foundHazard) {
+          stalls(rdStg) += hazard
+          kills(rdStg) += hazard
+        }
       }
     }
+
     this.bfs((n: Node) => {
       if(n.isMem){
         if(n.line.getClassName.toString == "Sodor.DatPath"){
@@ -900,28 +926,24 @@ abstract class Component(resetSignal: Bool = null) {
       }
     })
 
-    
-    return kill
+    // back pressure stalls
+    for (stg <- 0 until pipelineReg.size)
+      for (nstg <- stg + 1 until pipelineReg.size)
+        stalls(stg) += stalls(nstg)
+
   }
 
-  def insertBubble(kill: Bool) = {
+  def insertBubble = {
     for (stage <- 0 until pipelineReg.size) {
+      val stalls = stalls(stage).reduceLeft(_ || _)
+      val kills = kill(stage).reduceLeft(_ || _)
       for (r <- pipelineReg(stage)) {
-        val stall = stalls.reduceLeft(_ || _)
         r.updates += ((stall, r))
         r.updates += ((kill, r.resetVal))
         r.genned = false
       }
     }
   }
-
-  // def fixUpdates() = {
-  //   def compare(x: (Bool, Node), y: (Bool, Node)) = stage(x._1) < stage(x._2)
-  //   for (w <- writes) {
-  //     w.updates = w.updates.sortWith(compare(_,_))
-  //   }
-  // }
-
 
   def findConsumers() = {
     for (m <- mods) {
