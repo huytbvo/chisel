@@ -22,6 +22,7 @@ import ChiselError._
 object Component {
   // automatic pipeline stuff
   var pipeline = new HashMap[Int, ArrayBuffer[(Node, Bits)]]()
+  var pipelineComponent: Component = null
   var pipelineReg = new HashMap[Int, ArrayBuffer[Reg]]()
   def addPipeline(x: Int) = {
     for (i <- 0 until x) {
@@ -32,9 +33,10 @@ object Component {
     }
   }
   val tcomponents = new ArrayBuffer[TransactionalComponent]()
-  val valids = new HashMap[Int, Bool()]
-  val stalls = new HashMap[Int, ArrayBuffer[Bool()]]
-  val kills = new HashMap[Int, ArrayBuffer[Bool()]]
+  val valids = new ArrayBuffer[Bool]
+  val stalls = new HashMap[Int, ArrayBuffer[Bool]]
+  val globalStalls = new ArrayBuffer[Bool]()
+  val kills = new HashMap[Int, ArrayBuffer[Bool]]
 
   var resourceStream = getClass().getResourceAsStream("/emulator.h")
   var saveWidthWarnings = false
@@ -556,8 +558,9 @@ abstract class Component(resetSignal: Bool = null) {
     val map = getConsumers()
     for(stage <- 0 until pipeline.size) {
       val valid = Reg(resetVal = Bool(false))
-      valid(stage) += valid
+      valids += valid
       if (stage > 0) valid := valids(stage-1)
+      valid.name_it("HuyValid_" + stage, true)
       for ((p, enum) <- pipeline(stage) zip pipeline(stage).indices) {
         val r = Reg(resetVal = p._2)
         r := p._1.asInstanceOf[Bits]
@@ -862,7 +865,30 @@ abstract class Component(resetSignal: Bool = null) {
     coloredNodes
   }
 
-  def findHazards(): Bool = {
+  def compBfs(comp: Component, visit: Node => Unit) : Unit = {
+    val walked = new HashSet[Node]
+    val bfsQueue = new ScalaQueue[Node]
+    for((n, io) <- comp.io.flatten)
+      bfsQueue.enqueue(io)
+    while(!bfsQueue.isEmpty){
+      val top = bfsQueue.dequeue
+      walked += top
+      visit(top)
+      if(!top.isInstanceOf[Bits] || top.asInstanceOf[Bits].dir == OUTPUT || top.component != comp) {
+        for(i <- top.inputs) {
+          if(!(i == null)) {
+            if(!walked.contains(i)) {
+              bfsQueue.enqueue(i) 
+              walked += i
+            }
+          }
+        }
+      }
+    }
+  }
+
+  def findHazards() = {
+    val comp = pipelineComponent
     val stages = colorPipelineStages()
     def getStage(n: Node): Int = {
       if (stages.contains(n))
@@ -872,32 +898,38 @@ abstract class Component(resetSignal: Bool = null) {
     }
 
     // handshaking stalls
+    var globalStall = Bool(false)
     for (tc <- tcomponents) {
-      val stall = !tc.req_ready && tc.io.req_valid
-      val kill = !tc.resp_valid
-      assert(stage(tc.req_ready) == stage(tc.io.req_valid))
-      val stallStage = max(stage(tc.req_ready), stage(tc.io.req_valid))
-      val killStage = stage(tc.resp_valid)
-      stalls(stallStage) += stall
-      kills((killStage) += kill
+      val stall = tc.io.req.valid && (!tc.req_ready || !tc.resp_valid)
+      globalStall = globalStall || stall
     }
 
+    val mems = new ArrayBuffer[Mem[ _ ] ]
+    val regs = new ArrayBuffer[Reg]
+    
+    compBfs(comp, 
+            (n: Node) => {
+              if (n.isMem) mems += n.asInstanceOf[Mem[ _ ] ]
+              if (n.isInstanceOf[Reg]) regs += n.asInstanceOf[Reg]
+            }
+          )
+
     // raw stalls
-    for (p <- procs) {
-      if (p.isInstanceOf[Reg] && p.udates.length > 1 && stages.contains(p)) {
-        val enables = u.updates.map(_.1)
+    for (p <- regs) {
+      if (p.updates.length > 1 && stages.contains(p)) {
+        val enables = p.updates.map(_._1)
         val enStgs = enables.map(stages(_)).filter(_ > -1)
         val stage = enStgs.head
-        assert(enStgs.tail.map( _ == stage).reduceLeft(_ && _)) // check all the stgs match
-        val hazard = Bool(false)
-        val foundHazard = false
-        val rdStg = stage(p)
+        scala.Predef.assert(enStgs.tail.map( _ == stage).reduceLeft(_ && _)) // check all the stgs match
+        var hazard = Bool(false)
+        var foundHazard = false
+        val rdStg = stages(p)
         for ((en, wrStg) <- enables zip enStgs) {
           if (wrStg > rdStg) {
-            assert((wrStg - rdStg) == 1)
+            scala.Predef.assert((wrStg - rdStg) == 1)
             hazard = hazard || en
             foundHazard = true
-            println("found hazard " + u._1.line.getLineNumber + " " + u._1.line.getClassName)
+            println("found hazard " + en.line.getLineNumber + " " + en.line.getClassName)
           }
         }
         if(foundHazard) {
@@ -907,42 +939,68 @@ abstract class Component(resetSignal: Bool = null) {
       }
     }
 
-    this.bfs((n: Node) => {
-      if(n.isMem){
-        if(n.line.getClassName.toString == "Sodor.DatPath"){
-          println("mem found " + n.line.getLineNumber + " " + n.line.getClassName)
-          for(i <- n.asInstanceOf[Mem[Data]].reads){
-            println("read ports")
-            println(getStage(i.addr))
-            println(getStage(i.dataOut))
-          }
-          for(i <- n.asInstanceOf[Mem[Data]].writes){
-            println("write ports")
-            println(getStage(i.addr))
-            println(getStage(i.inputs(1)))
-            println(getStage(i.inputs(2)))
-          }
-        }
-      }
-    })
+    // this.bfs((n: Node) => {
+    //   if(n.isMem){
+    //     if(n.line.getClassName.toString == "Sodor.DatPath"){
+    //       println("mem found " + n.line.getLineNumber + " " + n.line.getClassName)
+    //       for(i <- n.asInstanceOf[Mem[Data]].reads){
+    //         println("read ports")
+    //         println(getStage(i.addr))
+    //         println(getStage(i.dataOut))
+    //       }
+    //       for(i <- n.asInstanceOf[Mem[Data]].writes){
+    //         println("write ports")
+    //         println(getStage(i.addr))
+    //         println(getStage(i.inputs(1)))
+    //         println(getStage(i.inputs(2)))
+    //       }
+    //     }
+    //   }
+    // })
 
     // back pressure stalls
     for (stg <- 0 until pipelineReg.size)
       for (nstg <- stg + 1 until pipelineReg.size)
-        stalls(stg) += stalls(nstg)
+        stalls(stg) ++= stalls(nstg)
 
-  }
-
-  def insertBubble = {
-    for (stage <- 0 until pipelineReg.size) {
-      val stalls = stalls(stage).reduceLeft(_ || _)
-      val kills = kill(stage).reduceLeft(_ || _)
-      for (r <- pipelineReg(stage)) {
-        r.updates += ((stall, r))
-        r.updates += ((kill, r.resetVal))
+    insertBubble(globalStall)
+      
+    for (r <- regs) {
+      if (r.updates.length > 1 && stages.contains(r)) {
+        val enables = r.updates.map(_._1).filter(stages(_) > -1)
+        val rawStall = stalls(stages(enables(0))).reduceLeft(_ || _)
+        var rStall = rawStall || !valids(stages(enables(0)))
+        if (tcomponents.length > 0) rStall = rStall || globalStall
+        r.updates += ((rStall, r))
         r.genned = false
       }
     }
+    
+    for (m <- mems) {
+      for (wprt <- m.writes) {
+        wprt.inputs(1) = wprt.inputs(1).asInstanceOf[Bits] && !stalls(stages(wprt.inputs(1))).reduceLeft(_ || _) && !globalStall
+      }
+    }
+    
+  }
+
+  def insertBubble(globalStall: Bool) = {
+    for (stage <- 0 until pipelineReg.size) {
+      val stall = stalls(stage).reduceLeft(_ || _)
+      val kill = kills(stage).reduceLeft(_ || _)
+      for (r <- pipelineReg(stage)) {
+        r.updates += ((stall, r))
+        r.updates += ((kill, r.resetVal))
+        r.updates += ((globalStall, r))
+        r.genned = false
+      }
+      val valid = valids(stage).comp
+      valid.updates += ((stall, valid))
+      valid.updates += ((kill, Bool(false)))
+      valid.updates += ((globalStall, valid))
+      valid.genned = false
+    }
+    
   }
 
   def findConsumers() = {
