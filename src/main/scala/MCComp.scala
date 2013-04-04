@@ -4,7 +4,7 @@ import Component._
 
 class TransactionalBundle extends Bundle {
   
-  val req = new PipeIO()(Bits()).flip()
+  val req: PipeIO[Data] = new PipeIO()(Bits()).flip()
   val resp = Bits(OUTPUT)
   
 }

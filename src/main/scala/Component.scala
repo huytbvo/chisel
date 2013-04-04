@@ -28,6 +28,8 @@ object Component {
     for (i <- 0 until x) {
       pipeline += (i -> new ArrayBuffer[(Node, Bits)]())
       pipelineReg += (i -> new ArrayBuffer[Reg]())
+    }
+    for (i <- 0 until x+1) {
       stalls += (i -> new ArrayBuffer[Bool])
       kills += (i -> new ArrayBuffer[Bool])
     }
@@ -559,7 +561,10 @@ abstract class Component(resetSignal: Bool = null) {
     for(stage <- 0 until pipeline.size) {
       val valid = Reg(resetVal = Bool(false))
       valids += valid
-      if (stage > 0) valid := valids(stage-1)
+      if (stage > 0) 
+        valid := valids(stage-1)
+      else
+        valid := Bool(true)
       valid.name_it("HuyValid_" + stage, true)
       for ((p, enum) <- pipeline(stage) zip pipeline(stage).indices) {
         val r = Reg(resetVal = p._2)
@@ -773,16 +778,6 @@ abstract class Component(resetSignal: Bool = null) {
       stageNumber
     }
    
-    //checks if n is a user defined pipeline register
-    def isPipeLineReg(n: Node): Boolean = {
-      var result = false
-      for(i <- pipelineReg.values){
-        if(i.contains(n)){
-          result = true
-        }
-      }
-      result
-    }
     //if n is a user defined pipeline register, return n's stage number
     def findPipeLineRegStage(n: Node): Int = {
       var result = -1
@@ -865,6 +860,17 @@ abstract class Component(resetSignal: Bool = null) {
     coloredNodes
   }
 
+  //checks if n is a user defined pipeline register
+  def isPipeLineReg(n: Node): Boolean = {
+    var result = false
+    for(i <- pipelineReg.values){
+      if(i.contains(n)){
+        result = true
+      }
+    }
+    result
+  }
+
   def compBfs(comp: Component, visit: Node => Unit) : Unit = {
     val walked = new HashSet[Node]
     val bfsQueue = new ScalaQueue[Node]
@@ -910,7 +916,7 @@ abstract class Component(resetSignal: Bool = null) {
     compBfs(comp, 
             (n: Node) => {
               if (n.isMem) mems += n.asInstanceOf[Mem[ _ ] ]
-              if (n.isInstanceOf[Reg]) regs += n.asInstanceOf[Reg]
+              if (n.isInstanceOf[Reg] && !isPipeLineReg(n)) regs += n.asInstanceOf[Reg]
             }
           )
 
@@ -918,13 +924,14 @@ abstract class Component(resetSignal: Bool = null) {
     for (p <- regs) {
       if (p.updates.length > 1 && stages.contains(p)) {
         val enables = p.updates.map(_._1)
-        val enStgs = enables.map(stages(_)).filter(_ > -1)
+        val enStgs = enables.map(getStage(_)).filter(_ > -1)
         val stage = enStgs.head
-        scala.Predef.assert(enStgs.tail.map( _ == stage).reduceLeft(_ && _)) // check all the stgs match
+        scala.Predef.assert(enStgs.tail.length == 0 || enStgs.tail.map( _ == stage).reduceLeft(_ && _)) // check all the stgs match
         var hazard = Bool(false)
         var foundHazard = false
-        val rdStg = stages(p)
-        for ((en, wrStg) <- enables zip enStgs) {
+        val rdStg = getStage(p)
+        for (en <- enables) {
+          val wrStg = getStage(en)
           if (wrStg > rdStg) {
             scala.Predef.assert((wrStg - rdStg) == 1)
             hazard = hazard || en
@@ -982,26 +989,29 @@ abstract class Component(resetSignal: Bool = null) {
     })
 
     // back pressure stalls
-    for (stg <- 0 until pipelineReg.size)
-      for (nstg <- stg + 1 until pipelineReg.size)
+    for (stg <- 0 until stalls.size)
+      for (nstg <- stg + 1 until stalls.size)
         stalls(stg) ++= stalls(nstg)
 
     insertBubble(globalStall)
       
     for (r <- regs) {
       if (r.updates.length > 1 && stages.contains(r)) {
-        val enables = r.updates.map(_._1).filter(stages(_) > -1)
-        val rawStall = stalls(stages(enables(0))).reduceLeft(_ || _)
-        var rStall = rawStall || !valids(stages(enables(0)))
-        if (tcomponents.length > 0) rStall = rStall || globalStall
-        r.updates += ((rStall, r))
+        val enStg = r.updates.map(_._1).map(getStage(_)).filter(_ > -1)(0)
+        var mask = Bool(false)
+        if(stalls(enStg).length > 0)
+          mask = mask || stalls(enStg).reduceLeft(_ || _) // raw
+        if (enStg > 0)
+          mask = mask || !valids(enStg-1) // no transaction
+        if (tcomponents.length > 0) mask = mask || globalStall
+        r.updates += ((mask, r))
         r.genned = false
       }
     }
     
     for (m <- mems) {
       for (wprt <- m.writes) {
-        wprt.inputs(1) = wprt.inputs(1).asInstanceOf[Bits] && !stalls(stages(wprt.inputs(1))).reduceLeft(_ || _) && !globalStall
+        wprt.inputs(1) = wprt.inputs(1).asInstanceOf[Bits] && !stalls(getStage(wprt.inputs(1))).foldLeft(Bool(false))(_ || _) && !globalStall
       }
     }
     
@@ -1009,8 +1019,8 @@ abstract class Component(resetSignal: Bool = null) {
 
   def insertBubble(globalStall: Bool) = {
     for (stage <- 0 until pipelineReg.size) {
-      val stall = stalls(stage).reduceLeft(_ || _)
-      val kill = kills(stage).reduceLeft(_ || _)
+      val stall = stalls(stage+1).foldLeft(Bool(false))(_ || _)
+      val kill = kills(stage).foldLeft(Bool(false))(_ || _)
       for (r <- pipelineReg(stage)) {
         r.updates += ((stall, r))
         r.updates += ((kill, r.resetVal))
