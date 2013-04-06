@@ -894,6 +894,7 @@ abstract class Component(resetSignal: Bool = null) {
   }
 
   def findHazards() = {
+    println("searching for hazards...")
     val comp = pipelineComponent
     val stages = colorPipelineStages()
     def getStage(n: Node): Int = {
@@ -912,13 +913,14 @@ abstract class Component(resetSignal: Bool = null) {
 
     val mems = new ArrayBuffer[Mem[ _ ] ]
     val regs = new ArrayBuffer[Reg]
-    
+
     compBfs(comp, 
             (n: Node) => {
               if (n.isMem) mems += n.asInstanceOf[Mem[ _ ] ]
               if (n.isInstanceOf[Reg] && !isPipeLineReg(n)) regs += n.asInstanceOf[Reg]
             }
           )
+
 
     // raw stalls
     for (p <- regs) {
@@ -934,7 +936,7 @@ abstract class Component(resetSignal: Bool = null) {
           val wrStg = getStage(en)
           if (wrStg > rdStg) {
             scala.Predef.assert((wrStg - rdStg) == 1)
-            hazard = hazard || en
+            hazard = hazard || (en && (if (wrStg > 0) valids(wrStg-1) else Bool(true)))
             foundHazard = true
             println("found hazard " + en.line.getLineNumber + " " + en.line.getClassName)
           }
@@ -981,7 +983,10 @@ abstract class Component(resetSignal: Bool = null) {
         if (enStg > 0)
           mask = mask || !valids(enStg-1) // no transaction
         if (tcomponents.length > 0) mask = mask || globalStall
-        r.updates += ((mask, r))
+        for (i <- 0 until r.updates.length) {
+          val en = r.updates(i)._1
+          r.updates(i) = ((en && ! mask, r.updates(i)._2))
+        }
         r.genned = false
       }
     }
