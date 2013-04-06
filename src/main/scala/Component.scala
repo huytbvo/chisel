@@ -788,6 +788,19 @@ abstract class Component(resetSignal: Bool = null) {
       }
       result
     }
+    //do initial pass to mark write points for regs
+    for(p <- procs){
+      p match {
+        case r: Reg => {
+          if(!isPipeLineReg(r)){
+            for(i <- r.getProducers()){
+              writePoints += i
+            }
+          }
+        }
+        case _ =>
+      }
+    }
     //do initial pass to to set the stage of the user defined pipeline registers in coloredNodes
     this.bfs((n: Node) => {
       if(isPipeLineReg(n)){
@@ -813,9 +826,6 @@ abstract class Component(resetSignal: Bool = null) {
         val currentNode = bfsQueue.dequeue
         for(i <- currentNode.getProducers()){
           if(!visited.contains(i)) {
-            if(currentNode.isReg && !isPipeLineReg(currentNode)){
-              writePoints += i
-            }
             bfsQueue.enqueue(i)
             visited += i
           }
