@@ -948,24 +948,47 @@ abstract class Component(resetSignal: Bool = null) {
       }
     }
 
-    // this.bfs((n: Node) => {
-    //   if(n.isMem){
-    //     if(n.line.getClassName.toString == "Sodor.DatPath"){
-    //       println("mem found " + n.line.getLineNumber + " " + n.line.getClassName)
-    //       for(i <- n.asInstanceOf[Mem[Data]].reads){
-    //         println("read ports")
-    //         println(getStage(i.addr))
-    //         println(getStage(i.dataOut))
-    //       }
-    //       for(i <- n.asInstanceOf[Mem[Data]].writes){
-    //         println("write ports")
-    //         println(getStage(i.addr))
-    //         println(getStage(i.inputs(1)))
-    //         println(getStage(i.inputs(2)))
-    //       }
-    //     }
-    //   }
-    // })
+    this.bfs((n: Node) => {
+      if(n.isMem){
+        if(n.line.getClassName.toString == "Sodor.DatPath"){
+          println("mem found " + n.line.getLineNumber + " " + n.line.getClassName)
+          for(i <- n.asInstanceOf[Mem[Data]].writes){
+            println("write ports")
+            println(getStage(i.addr))
+            println(getStage(i.inputs(1)))
+            println(getStage(i.inputs(2)))
+            val waddr = i.addr
+            val enable = i.inputs(2)
+            val dataIn = i.inputs(1)
+            val wrStg = getStage(enable)
+            var hazard = Bool(false)
+            var foundHazard = false
+            //assert(wrStg == getStage(waddr), "write port inputs must be in the stage pipeline stage")//check that write port inputs are in same stage
+            //assert(getStage(waddr) == getStage(dataIn), "write port inputs must be in the stage pipeline stage")//check that write port inputs are in same stage
+            var rdStg = -1
+            for(j <- n.asInstanceOf[Mem[Data]].reads){
+              println("read ports")
+              println(getStage(j.addr))
+              println(getStage(j.dataOut))
+              val raddr = j.addr
+              //assert(rdStg == -1 | rdStg == getStage(raddr), "all read ports must be in the same stage")//check that all read ports are in the same stage
+              rdStg = getStage(raddr)
+              //assert(rdStg == getStage(j.dataOut), "read port addr and DataOut must be in the same stage")//check that read port addr and dataOut nodes are in same stage
+              if(wrStg > 0 && rdStg > 0 && wrStg > rdStg){
+                scala.Predef.assert((wrStg - rdStg) == 1)
+                hazard = hazard ||(enable.asInstanceOf[Bool] && (waddr.asInstanceOf[Bits] === raddr.asInstanceOf[Bits]))   
+                foundHazard = true
+                println("found hazard " + enable.line.getLineNumber + " " + enable.line.getClassName)
+              }
+              if(foundHazard) {
+                stalls(rdStg) += hazard
+                kills(rdStg) += hazard
+              }
+            }
+          }
+        }
+      }
+    })
 
     // back pressure stalls
     for (stg <- 0 until stalls.size)
