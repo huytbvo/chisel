@@ -938,7 +938,7 @@ abstract class Component(resetSignal: Bool = null) {
         val enables = p.updates.map(_._1)
         val enStgs = enables.map(getStage(_)).filter(_ > -1)
         val stage = enStgs.head
-        scala.Predef.assert(enStgs.tail.length == 0 || enStgs.tail.map( _ == stage).reduceLeft(_ && _)) // check all the stgs match
+        scala.Predef.assert(enStgs.tail.length == 0 || enStgs.tail.map( _ == stage).reduceLeft(_ && _), println(p.line.getLineNumber + " " + p.line.getClassName)) // check all the stgs match
         var hazard = Bool(false)
         var foundHazard = false
         val rdStg = getStage(p)
@@ -968,8 +968,8 @@ abstract class Component(resetSignal: Bool = null) {
             println(getStage(i.inputs(1)))
             println(getStage(i.inputs(2)))
             val waddr = i.addr
-            val enable = i.inputs(2)
-            val dataIn = i.inputs(1)
+            val enable = i.inputs(1)
+            val dataIn = i.inputs(2)
             val wrStg = getStage(enable)
             var hazard = Bool(false)
             var foundHazard = false
