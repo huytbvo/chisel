@@ -585,6 +585,7 @@ class VerilogBackend extends Backend {
     c.insertPipelineRegisters()
     c.genAllMuxes
     c.findHazards()
+    c.resolveHazards()
     c.genAllMuxes
     c.inferAll
     c.forceMatchingWidths;
