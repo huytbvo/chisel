@@ -37,7 +37,6 @@ object Component {
   val tcomponents = new ArrayBuffer[TransactionalComponent]()
   val valids = new ArrayBuffer[Bool]
   val stalls = new HashMap[Int, ArrayBuffer[Bool]]
-  val globalStalls = new ArrayBuffer[Bool]()
   val kills = new HashMap[Int, ArrayBuffer[Bool]]
 
   var resourceStream = getClass().getResourceAsStream("/emulator.h")
@@ -569,7 +568,7 @@ abstract class Component(resetSignal: Bool = null) {
       for ((p, enum) <- pipeline(stage) zip pipeline(stage).indices) {
         val r = Reg(resetVal = p._2)
         r := p._1.asInstanceOf[Bits]
-        r.name_it("Huy_" + enum, true)
+        r.name_it("Huy_" + enum + "_" + p._1.name, true)
         pipelineReg(stage) += r.comp.asInstanceOf[Reg]
         val consumers = map(p._1)
         for (c <- consumers) {
@@ -903,6 +902,13 @@ abstract class Component(resetSignal: Bool = null) {
     }
   }
 
+  // def connect(x: Node, src: Component, dest: Component) = {
+  //   def getHierarchy(c: Component): ArrayBuffer[Component] = {
+      
+  //   }
+
+  // }
+
   def findHazards() = {
     println("searching for hazards...")
     val comp = pipelineComponent
@@ -931,14 +937,13 @@ abstract class Component(resetSignal: Bool = null) {
             }
           )
 
-
     // raw stalls
     for (p <- regs) {
       if (p.updates.length > 1 && stages.contains(p)) {
         val enables = p.updates.map(_._1)
         val enStgs = enables.map(getStage(_)).filter(_ > -1)
         val stage = enStgs.head
-        scala.Predef.assert(enStgs.tail.length == 0 || enStgs.tail.map( _ == stage).reduceLeft(_ && _), println(p.line.getLineNumber + " " + p.line.getClassName)) // check all the stgs match
+        scala.Predef.assert(enStgs.tail.map( _ == stage).foldLeft(true)(_ && _), println(p.line.getLineNumber + " " + p.line.getClassName)) // check all the stgs match
         var hazard = Bool(false)
         var foundHazard = false
         val rdStg = getStage(p)
@@ -958,47 +963,31 @@ abstract class Component(resetSignal: Bool = null) {
       }
     }
 
-    this.bfs((n: Node) => {
-      if(n.isMem){
-        if(n.line.getClassName.toString == "Sodor.DatPath"){
-          println("mem found " + n.line.getLineNumber + " " + n.line.getClassName)
-          for(i <- n.asInstanceOf[Mem[Data]].writes){
-            println("write ports")
-            println(getStage(i.addr))
-            println(getStage(i.inputs(1)))
-            println(getStage(i.inputs(2)))
-            val waddr = i.addr
-            val enable = i.inputs(1)
-            val dataIn = i.inputs(2)
-            val wrStg = getStage(enable)
-            var hazard = Bool(false)
-            var foundHazard = false
-            //assert(wrStg == getStage(waddr), "write port inputs must be in the stage pipeline stage")//check that write port inputs are in same stage
-            //assert(getStage(waddr) == getStage(dataIn), "write port inputs must be in the stage pipeline stage")//check that write port inputs are in same stage
-            var rdStg = -1
-            for(j <- n.asInstanceOf[Mem[Data]].reads){
-              println("read ports")
-              println(getStage(j.addr))
-              println(getStage(j.dataOut))
-              val raddr = j.addr
-              //assert(rdStg == -1 | rdStg == getStage(raddr), "all read ports must be in the same stage")//check that all read ports are in the same stage
-              rdStg = getStage(raddr)
-              //assert(rdStg == getStage(j.dataOut), "read port addr and DataOut must be in the same stage")//check that read port addr and dataOut nodes are in same stage
-              if(wrStg > 0 && rdStg > 0 && wrStg > rdStg){
-                scala.Predef.assert((wrStg - rdStg) == 1)
-                hazard = hazard ||(enable.asInstanceOf[Bool] && (waddr.asInstanceOf[Bits] === raddr.asInstanceOf[Bits]))   
-                foundHazard = true
-                println("found hazard " + enable.line.getLineNumber + " " + enable.line.getClassName)
-              }
-              if(foundHazard) {
-                stalls(rdStg) += hazard
-                kills(rdStg) += hazard
-              }
-            }
+    for (n <- mems) {
+      for(i <- n.writes){
+        val waddr = i.addr
+        val enable = i.inputs(1)
+        val dataIn = i.inputs(2)
+        val wrStg = getStage(enable)
+        var hazard = Bool(false)
+        var foundHazard = false
+        var rdStg = -1
+        for(j <- n.reads){
+          val raddr = j.addr
+          rdStg = getStage(raddr)
+          if(wrStg > 0 && rdStg > 0 && wrStg > rdStg){
+            scala.Predef.assert((wrStg - rdStg) == 1)
+            hazard = hazard ||(enable.asInstanceOf[Bool] && (waddr.asInstanceOf[Bits] === raddr.asInstanceOf[Bits]))   
+            foundHazard = true
+            println("found hazard " + enable.line.getLineNumber + " " + enable.line.getClassName)
+          }
+          if(foundHazard) {
+            stalls(rdStg) += hazard
+            kills(rdStg) += hazard
           }
         }
       }
-    })
+    }
 
     // back pressure stalls
     for (stg <- 0 until stalls.size)
