@@ -62,6 +62,7 @@ object Component {
     forwardedReadPoints += d
   }
 
+  
   val tcomponents = new ArrayBuffer[TransactionalComponent]()
   var stages: HashMap[Node, Int] = null
   var cRegs: ArrayBuffer[Reg] = null
@@ -618,7 +619,7 @@ abstract class Component(resetSignal: Bool = null) {
     }
   }
   
-  def colorPipelineStages(): HashMap[Node, Int] = {
+  def colorPipelineStages() = {
     println("coloring pipeline stages")
     //map of nodes to consumers for use later
     val consumerMap = getConsumers()
@@ -751,7 +752,7 @@ abstract class Component(resetSignal: Bool = null) {
         }
       }
     }
-    coloredNodes
+    stages = coloredNodes
   }
 
   //checks if n is a user defined pipeline register
@@ -797,7 +798,7 @@ abstract class Component(resetSignal: Bool = null) {
   def findHazards() = {
     println("searching for hazards...")
     val comp = pipelineComponent
-    stages = colorPipelineStages()
+    //stages = colorPipelineStages()
 
     // handshaking stalls
     globalStall = Bool(false)
@@ -925,7 +926,33 @@ abstract class Component(resetSignal: Bool = null) {
     }
     
   }
-
+  
+  def generateForwardingLogic() = {
+    println("generating forwarding logic")
+    for(stateElement <- forwardedReadPoints){
+      stateElement match {
+        case r: Reg => {
+          //find read point, write point, distance pairs
+          val RAWs = new ArrayBuffer[(Node, Node, Node, Int)]
+          for ((writeEn, writeData) <- r.updates) {
+            println("writeEn " + writeEn.getProducers.length)
+            println("writeData " + writeData.getProducers.length)
+          }
+          /*for(tuple <- hazards){
+            find the previous versions of the write data and write enable signals
+            for each stage where both write data and write enable are available {
+              val doFoward = re & we & raddr === waddr
+              insert write data into read point mux
+            }
+          }*/
+        }
+        case m: Mem[_] => {
+        }
+        case _ =>
+      }
+    }
+  }
+  
   def findConsumers() = {
     for (m <- mods) {
       m.addConsumers;

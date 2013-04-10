@@ -584,7 +584,9 @@ class VerilogBackend extends Backend {
       widthWriter = new java.io.FileWriter(base_name + c.name + ".width.warnings")
     c.insertPipelineRegisters()
     c.genAllMuxes
+    c.colorPipelineStages()
     c.findHazards()
+    c.generateForwardingLogic()
     c.resolveHazards()
     c.genAllMuxes
     c.inferAll
