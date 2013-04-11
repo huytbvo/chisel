@@ -932,15 +932,100 @@ abstract class Component(resetSignal: Bool = null) {
   }
   
   def generateForwardingLogic() = {
+    def findEarliestStageAvail(n: Node) : Int = {
+      var currentNode = n
+      var stagesAhead = 0
+      var hasOneProducer = false
+      currentNode match {
+        case r: Reg => {
+          hasOneProducer = r.updates.length == 1
+        }
+        case m: Mem[_] => {
+          hasOneProducer = false
+        }
+        case n: Node => {
+          hasOneProducer = n.getProducers().length == 1
+        }
+        case _ =>
+      }
+      while(hasOneProducer){
+        currentNode match {
+          case r: Reg => {
+            hasOneProducer = r.updates.length == 1
+            if(hasOneProducer){
+              currentNode = r.updates(0)._2
+              if(isPipeLineReg(r)){
+                stagesAhead = stagesAhead + 1
+              }
+            }
+          }
+          case m: Mem[_] => {
+            hasOneProducer = false
+          }
+          case n: Node => {
+            hasOneProducer = n.getProducers().length == 1
+            if(hasOneProducer){
+              currentNode = n.getProducers()(0)
+            }
+          }
+          case _ =>
+        }      
+      }
+      stagesAhead
+    }
+    def findPastNodeVersion(n: Node, i: Int) : Node = {
+      var currentNode = n
+      var j = i
+      while(j > 0){
+        currentNode match {
+          case r: Reg => {
+            Predef.assert(r.updates.length == 1)
+            currentNode = r.updates(0)._2
+            if(isPipeLineReg(r)){
+              j = j -1
+            }
+          }
+          case m: Mem[_] => {
+            Predef.assert(false)
+          }
+          case n: Node => {
+            Predef.assert(n.getProducers().length == 1)
+            currentNode = n.getProducers()(0)
+          }
+          case _ =>
+        }      
+      }
+      currentNode
+    }
     println("generating forwarding logic")
     for(stateElement <- forwardedReadPoints){
       stateElement match {
         case r: Reg => {
-          //find read point, write point, distance pairs
-          val RAWs = new ArrayBuffer[(Node, Node, Node, Int)]
+          val forwardPoints = new HashMap[Int, ArrayBuffer[(Node,Node)]]()
+          for (i <- stages(r) + 1 to pipelineReg.size){
+            forwardPoints(i) = new ArrayBuffer[(Node,Node)]()
+          } 
           for ((writeEn, writeData) <- r.updates) {
-            println("writeEn " + writeEn.getProducers.length)
-            println("writeData " + writeData.getProducers.length)
+            println("writeEn producers " + writeEn.getProducers.length)
+            println("writeData producers " + writeData.getProducers.length)
+            println("writeEn earliest stage " + findEarliestStageAvail(writeEn))
+            println("writeData earliest stage " + findEarliestStageAvail(writeData))
+            //add this assertion later(it will fail for now due weirdness in the 1stage)
+            //Predef.assert(stages(writeEn) == stages(writeData))
+            val earliestForwardingStage = stages(writeEn) - Math.min(findEarliestStageAvail(writeEn), findEarliestStageAvail(writeData))
+            for(i <- Math.min(stages(r) + 1, earliestForwardingStage) to stages(writeEn)) {
+              forwardPoints(i) += ((findPastNodeVersion(writeEn, stages(writeEn) - i), findPastNodeVersion(writeData, stages(writeData) - i)))
+            }
+          }
+          println(forwardPoints)
+          for(i <- stages(r) + 1 to pipelineReg.size){
+            //generate muxes
+            if(!forwardPoints(i).isEmpty){
+              val muxMapping = new ArrayBuffer[(Bool, Data)]()
+              for((j,k) <- forwardPoints(i)){
+                muxMapping += ((j.asInstanceOf[Bool], k.asInstanceOf[Data]))
+              }
+            }
           }
           /*for(tuple <- hazards){
             find the previous versions of the write data and write enable signals
