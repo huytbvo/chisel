@@ -24,37 +24,16 @@ object Component {
   var pipeline = new HashMap[Int, ArrayBuffer[(Node, Bits)]]()
   var pipelineComponent: Component = null
   var pipelineReg = new HashMap[Int, ArrayBuffer[Reg]]()
-  def addPipeline(x: Int) = {
-    for (i <- 0 until x) {
+  def setNumStages(x: Int) = {
+    for (i <- 0 until x-1) {
       pipeline += (i -> new ArrayBuffer[(Node, Bits)]())
       pipelineReg += (i -> new ArrayBuffer[Reg]())
     }
-    for (i <- 0 until x+1) {
+    for (i <- 0 until x) {
       stalls += (i -> new ArrayBuffer[Bool])
       kills += (i -> new ArrayBuffer[Bool])
     }
   }
-
-  // def setNumStages(x: Int) = {
-  //   for (i <- 0 until x) {
-  //     pipeline += (i -> new ArrayBuffer[(Node, Bits)]())
-  //     pipelineReg += (i -> new ArrayBuffer[Reg]())
-  //   }
-  //   for (i <- 0 until x+1) {
-  //     stalls += (i -> new ArrayBuffer[Bool])
-  //     kills += (i -> new ArrayBuffer[Bool])
-  //   }
-  // }
-  // def addPipeReg(stage: Int, n: Node, rst: Bits): Bits = {
-  //   val r = Reg(resetVal = rst)
-  //   r := n.asInstanceOf[Bits]
-  //   r.name_it("Huy_" + stage + n.name, true)
-  //   pipelineReg(stage) += r.comp.asInstanceOf[Reg]
-  //   return r
-  // }
-  // def addPipeReg(stage: Int, n: Node, resetVal: Bits, stages: Int) = {
-
-  // }
 
   var forwardedReadPoints = new HashSet[Delay]
   def addForwardedReadPoint(d: Delay) = {
@@ -62,7 +41,11 @@ object Component {
     forwardedReadPoints += d
   }
 
-  
+  def addPipeReg(stage: Int, n: Node, rst: Bits) = {
+    pipeline(stage) += (n -> rst)
+  }
+
+
   val tcomponents = new ArrayBuffer[TransactionalComponent]()
   var stages: HashMap[Node, Int] = null
   var cRegs: ArrayBuffer[Reg] = null
@@ -822,7 +805,7 @@ abstract class Component(resetSignal: Bool = null) {
         val enables = p.updates.map(_._1)
         val enStgs = enables.map(getStage(_)).filter(_ > -1)
         val stage = enStgs.head
-        scala.Predef.assert(enStgs.tail.map( _ == stage).foldLeft(true)(_ && _), println(p.line.getLineNumber + " " + p.line.getClassName)) // check all the stgs match
+        scala.Predef.assert(enStgs.tail.map( _ == stage).foldLeft(true)(_ && _), println(p.line.getLineNumber + " " + p.line.getClassName + " " + enStgs)) // check all the stgs match
         var hazard = Bool(false)
         var foundHazard = false
         val rdStg = getStage(p)
@@ -853,11 +836,16 @@ abstract class Component(resetSignal: Bool = null) {
         for(j <- n.reads){
           val raddr = j.addr
           rdStg = getStage(raddr)
+          val enables = getVersions(enable.asInstanceOf[Bool])
+          val waddrs = getVersions(waddr.asInstanceOf[Bits])
           if(wrStg > 0 && rdStg > 0 && wrStg > rdStg){
-            scala.Predef.assert((wrStg - rdStg) == 1)
-            hazard = hazard ||(enable.asInstanceOf[Bool] && (waddr.asInstanceOf[Bits] === raddr.asInstanceOf[Bits]))   
-            foundHazard = true
-            println("found hazard " + enable.line.getLineNumber + " " + enable.line.getClassName)
+            scala.Predef.assert((getStage(enables.last) - rdStg) == 1, println(enables.length))
+            scala.Predef.assert(enables.length == waddrs.length, println(enables.length + " " + waddrs.length))
+            for ((en, w) <- enables zip waddrs) {
+              hazard = hazard ||(en.asInstanceOf[Bool] && (w.asInstanceOf[Bits] === raddr.asInstanceOf[Bits]))
+              foundHazard = true
+              println("found hazard " + en.line.getLineNumber + " " + en.line.getClassName + " " + en.name + " " + n.name)
+            }
           }
           if (foundHazard) {
             hazards += ((hazard, n, rdStg))
@@ -866,6 +854,22 @@ abstract class Component(resetSignal: Bool = null) {
       }
     }
     
+  }
+  
+  def getVersions(b: Bits): ArrayBuffer[Bits] = {
+    val res = new ArrayBuffer[Bits]
+    var cur = b
+    while (cur.inputs.length == 1) {
+      if (cur.inputs(0).isInstanceOf[Reg]) {
+        res += cur
+        cur = cur.comp.updates(0)._2.asInstanceOf[Bits]
+      } else if (cur.inputs(0).isInstanceOf[Bits]) {
+        cur = cur.inputs(0).asInstanceOf[Bits]
+      } else {
+        return res
+      }
+    }
+    return res
   }
 
   def resolveHazards() = {
