@@ -887,7 +887,7 @@ abstract class Component(resetSignal: Bool = null) {
 
     insertBubble(globalStall)
       
-    for (r <- cRegs) {
+    for ((r, ind) <- (cRegs zip cRegs.indices)) {
       if (r.updates.length > 1 && stages.contains(r)) {
         val enStg = r.updates.map(_._1).map(getStage(_)).filter(_ > -1)(0)
         var mask = Bool(false)
@@ -896,6 +896,7 @@ abstract class Component(resetSignal: Bool = null) {
         if (enStg > 0)
           mask = mask || !valids(enStg-1) // no transaction
         if (tcomponents.length > 0) mask = mask || globalStall
+        mask.name_it("HuyMask_" + ind, true)
         for (i <- 0 until r.updates.length) {
           val en = r.updates(i)._1
           r.updates(i) = ((en && ! mask, r.updates(i)._2))
@@ -917,14 +918,14 @@ abstract class Component(resetSignal: Bool = null) {
       val stall = stalls(stage+1).foldLeft(Bool(false))(_ || _)
       val kill = kills(stage).foldLeft(Bool(false))(_ || _)
       for (r <- pipelineReg(stage)) {
-        r.updates += ((stall, r))
         r.updates += ((kill, r.resetVal))
+        r.updates += ((stall, r))
         r.updates += ((globalStall, r))
         r.genned = false
       }
       val valid = valids(stage).comp
-      valid.updates += ((stall, valid))
       valid.updates += ((kill, Bool(false)))
+      valid.updates += ((stall, valid))
       valid.updates += ((globalStall, valid))
       valid.genned = false
     }
