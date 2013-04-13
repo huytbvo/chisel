@@ -103,6 +103,8 @@ abstract class Node extends nameable{
   var line: StackTraceElement = findFirstUserLine(Thread.currentThread().getStackTrace)
   var isScanArg = false
   var isPrintArg = false
+  //automatic pipelining stuff
+  var pipelinedVersion: Node = null
   def isMemOutput = false
   
   nodes += this
@@ -447,5 +449,13 @@ abstract class Node extends nameable{
   
   def getProducers(): Seq[Node] = {
     inputs
+  }
+  
+  def replaceProducer(delete: Node, add: Node): Unit = {
+    for(i <- 0 until inputs.length){
+      if(inputs(i) == delete){
+        inputs(i) = add
+      }
+    }
   }
 }

@@ -34,18 +34,22 @@ object Component {
       kills += (i -> new ArrayBuffer[Bool])
     }
   }
-
-  var forwardedReadPoints = new HashSet[Delay]
+  def addPipeReg(stage: Int, n: Node, rst: Bits) = {
+    pipeline(stage) += (n -> rst)
+  }
+  val forwardedReadPoints = new HashSet[Delay]
+  val memWritePoints = new HashMap[(Mem[Data], Bool), ArrayBuffer[(Bool, Node, Node)]]
   def addForwardedReadPoint(d: Delay) = {
     Predef.assert(d.isInstanceOf[Reg] || d.isInstanceOf[Mem[_]])
     forwardedReadPoints += d
   }
-
-  def addPipeReg(stage: Int, n: Node, rst: Bits) = {
-    pipeline(stage) += (n -> rst)
+  def addMemWritePoint(mem: Mem[Data], writePortEn: Bool, writeEn: Node, writeData: Node, writeAddr: Node) = {
+    if(!memWritePoints.contains((mem, writePortEn))){
+      memWritePoints(((mem, writePortEn.asInstanceOf[Bool]))) = new ArrayBuffer[(Bool, Node, Node)](0)
+    }
+    memWritePoints(((mem, writePortEn.asInstanceOf[Bool]))) += ((writeEn.asInstanceOf[Bool], writeData, writeAddr))
   }
-
-
+  
   val tcomponents = new ArrayBuffer[TransactionalComponent]()
   var stages: HashMap[Node, Int] = null
   var cRegs: ArrayBuffer[Reg] = null
@@ -577,7 +581,7 @@ abstract class Component(resetSignal: Bool = null) {
     bfs(getConsumer(_))
     map
   }
-
+  
   def insertPipelineRegisters() = {
     val map = getConsumers()
     for(stage <- 0 until pipeline.size) {
@@ -591,6 +595,8 @@ abstract class Component(resetSignal: Bool = null) {
       for ((p, enum) <- pipeline(stage) zip pipeline(stage).indices) {
         val r = Reg(resetVal = p._2)
         r := p._1.asInstanceOf[Bits]
+        //add pointer in p._1 to point to pipelined version of itself
+        p._1.pipelinedVersion = r
         r.name_it("Huy_" + enum + "_" + p._1.name, true)
         pipelineReg(stage) += r.comp.asInstanceOf[Reg]
         val consumers = map(p._1)
@@ -712,6 +718,15 @@ abstract class Component(resetSignal: Bool = null) {
           val producerStageNum = resolvedProducerStage(currentNode)
           val consumerStageNum = resolvedConsumerStage(currentNode)
           if(currentNode.isReg && !isPipeLineReg(currentNode)){
+            /*if(currentNode.line.getLineNumber == 50){
+              println(currentNode.line.getLineNumber + " " + currentNode.line.getClassName)
+              println(consumerStageNum)
+              println("consumer stages")
+              for(n <- consumerMap(currentNode)){
+                println(n + " " + coloredNodes(n))
+                println(coloredNodes(n).line.getLineNumber + " " + coloredNodes(n).line.getClassName)
+              }
+            }*/
             if(consumerStageNum > -1){
               coloredNodes(currentNode) = consumerStageNum
             } else {
@@ -998,45 +1013,53 @@ abstract class Component(resetSignal: Bool = null) {
       }
       currentNode
     }
+    var consumerMap = getConsumers()
     println("generating forwarding logic")
     for(stateElement <- forwardedReadPoints){
       stateElement match {
         case r: Reg => {
+          println("r stage " + stages(r))
           val forwardPoints = new HashMap[Int, ArrayBuffer[(Node,Node)]]()
           for (i <- stages(r) + 1 to pipelineReg.size){
             forwardPoints(i) = new ArrayBuffer[(Node,Node)]()
           } 
-          for ((writeEn, writeData) <- r.updates) {
-            println("writeEn producers " + writeEn.getProducers.length)
-            println("writeData producers " + writeData.getProducers.length)
-            println("writeEn earliest stage " + findEarliestStageAvail(writeEn))
-            println("writeData earliest stage " + findEarliestStageAvail(writeData))
-            //add this assertion later(it will fail for now due weirdness in the 1stage)
-            //Predef.assert(stages(writeEn) == stages(writeData))
+          for ((writeEn, writeData) <- r.updates){Predef.assert(stages(writeEn) == stages(writeData))
             val earliestForwardingStage = stages(writeEn) - Math.min(findEarliestStageAvail(writeEn), findEarliestStageAvail(writeData))
-            for(i <- Math.min(stages(r) + 1, earliestForwardingStage) to stages(writeEn)) {
+            for(i <- stages(r) + 1 to stages(writeEn)) {
               forwardPoints(i) += ((findPastNodeVersion(writeEn, stages(writeEn) - i), findPastNodeVersion(writeData, stages(writeData) - i)))
             }
           }
           println(forwardPoints)
+          val muxMapping = new ArrayBuffer[(Bool, Data)]()
           for(i <- stages(r) + 1 to pipelineReg.size){
             //generate muxes
-            if(!forwardPoints(i).isEmpty){
-              val muxMapping = new ArrayBuffer[(Bool, Data)]()
+            if(!forwardPoints(i).isEmpty){     
               for((j,k) <- forwardPoints(i)){
                 muxMapping += ((j.asInstanceOf[Bool], k.asInstanceOf[Data]))
+                //append forward condition to hazards list
+                for((cond, delay, stage) <- hazards){
+                  if(stage == i){
+                    hazards -= ((cond, delay, stage))
+                    hazards += ((cond & ~j.asInstanceOf[Bool], delay, stage))
+                  }
+                }
               }
             }
           }
-          /*for(tuple <- hazards){
-            find the previous versions of the write data and write enable signals
-            for each stage where both write data and write enable are available {
-              val doFoward = re & we & raddr === waddr
-              insert write data into read point mux
-            }
-          }*/
+          val bypassMux = MuxCase(consumerMap(r)(0).asInstanceOf[Data],muxMapping)
+          for (n <- consumerMap(consumerMap(r)(0))){
+            println(n + "'s producers")
+            println(n.getProducers())
+            if(n.getProducers().contains(consumerMap(r)(0))){
+              println("wtf")
+            } 
+            n.replaceProducer(consumerMap(r)(0), bypassMux)
+            
+          }
         }
         case m: Mem[_] => {
+          println("generating forwarding logic for Mems")
+          
         }
         case _ =>
       }
