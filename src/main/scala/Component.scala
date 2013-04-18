@@ -635,6 +635,8 @@ abstract class Component(resetSignal: Bool = null) {
               case mux: Mux => {
                 if(!isReg){
                   stageNumber = coloredNodes(i)
+                } else {
+                  Predef.assert(backend.isInstanceOf[CppBackend], "prevents reg from inferring its stage from its default mux in Cpp backend")
                 }
               }
               case mem: Mem[_] =>
@@ -724,28 +726,6 @@ abstract class Component(resetSignal: Bool = null) {
             }
           }
         }
-        //remeber to delete
-        def debug0(name: String) = {
-          if(currentNode.name == name){
-            println(name + " stage:" + coloredNodes(currentNode))
-            println(name + " consumer stages")
-            for(n <- consumerMap(currentNode)){
-              if(coloredNodes.contains(n)){
-                println(n)
-                println(n.line.getLineNumber)
-                println(coloredNodes(n))
-              }
-            }
-            println(name + " producer stages")
-            for(n <- currentNode.getProducers()){
-              if(coloredNodes.contains(n)){
-                println(n)
-                println(n.line.getLineNumber)
-                println(coloredNodes(n))
-              }
-            }
-          }
-        }
         //handle visit
         //only need to do stuff if currentNode does not already have a stage number
         if(!coloredNodes.contains(currentNode) & !currentNode.isMem){
@@ -753,7 +733,6 @@ abstract class Component(resetSignal: Bool = null) {
             val consumerStageNum = resolvedConsumerStage(currentNode, true)
             if(consumerStageNum > -1){
               coloredNodes(currentNode) = consumerStageNum
-              debug0("pc_reg")
             } else {
               unresolvedNodes += currentNode
             }
@@ -778,32 +757,6 @@ abstract class Component(resetSignal: Bool = null) {
         }
       }
     }
-    //remember to delete
-    def debug1(name: String) = {
-      println("debug1")
-      for((node, i) <- coloredNodes){
-        if(node.name == name){
-          println(name + " stage:" + coloredNodes(node))
-          println(name + " consumer stages")
-          for(n <- consumerMap(node)){
-            if(coloredNodes.contains(n)){
-              println(n)
-              println(n.line.getLineNumber)
-              println(coloredNodes(n))
-            }
-          }
-          println(name + " producer stages")
-          for(n <- node.getProducers()){
-            if(coloredNodes.contains(n)){
-              println(n)
-              println(n.line.getLineNumber)
-              println(coloredNodes(n))
-            }
-          }
-        }
-      }
-    }
-    debug1("pc_reg")
     stages = coloredNodes
   }
 
@@ -1073,7 +1026,7 @@ abstract class Component(resetSignal: Bool = null) {
     for(stateElement <- forwardedReadPoints){
       stateElement match {
         case r: Reg => {
-          println("r stage " + stages(r))
+          //println("r stage " + stages(r))
           val forwardPoints = new HashMap[Int, ArrayBuffer[(Node,Node)]]()
           for (i <- stages(r) + 1 to pipelineReg.size){
             forwardPoints(i) = new ArrayBuffer[(Node,Node)]()
@@ -1084,7 +1037,7 @@ abstract class Component(resetSignal: Bool = null) {
               forwardPoints(i) += ((findPastNodeVersion(writeEn, stages(writeEn) - i), findPastNodeVersion(writeData, stages(writeData) - i)))
             }
           }
-          println(forwardPoints)
+          //println(forwardPoints)
           val muxMapping = new ArrayBuffer[(Bool, Data)]()
           for(i <- stages(r) + 1 to pipelineReg.size){
             //generate muxes
@@ -1102,19 +1055,19 @@ abstract class Component(resetSignal: Bool = null) {
           }
           val bypassMux = MuxCase(consumerMap(r)(0).asInstanceOf[Data],muxMapping)
           for (n <- consumerMap(consumerMap(r)(0))){
-            println(n + "'s producers")
-            println(n.getProducers())
+            //println(n + "'s producers")
+            //println(n.getProducers())
             if(n.getProducers().contains(consumerMap(r)(0))){
-              println("found consumers to modify")
+              //println("found consumers to modify")
             } 
             n.replaceProducer(consumerMap(r)(0), bypassMux)
             
           }
         }
         case m: Mem[_] => {
-          println("generating forwarding logic for Mems")
-          println("annotated write points")
-          println(memWritePoints)
+          //println("generating forwarding logic for Mems")
+          //println("annotated write points")
+          //println(memWritePoints)
           for(readPort <- m.reads){
             val forwardPoints = new HashMap[Int, ArrayBuffer[(Node, Node, Node)]]()
             for (i <- stages(readPort.addr) + 1 to pipelineReg.size){
@@ -1131,8 +1084,8 @@ abstract class Component(resetSignal: Bool = null) {
                 forwardPoints(i) += ((findPastNodeVersion(delayedWriteEn, stages(delayedWriteEn) - i), findPastNodeVersion(delayedWriteData, stages(delayedWriteData) - i), findPastNodeVersion(delayedWriteAddr, stages(delayedWriteAddr) - i)))
               }
             }
-            println("Mem forward points")
-            println(forwardPoints)
+            //println("Mem forward points")
+            //println(forwardPoints)
             val muxMapping = new ArrayBuffer[(Bool, Data)]()
             for(i <- stages(readPort.addr) + 1 to pipelineReg.size){
               //generate muxes
@@ -1146,7 +1099,7 @@ abstract class Component(resetSignal: Bool = null) {
                     //if(wStage == i & rEn == readPort.cond & wEn == writeEn.asInstanceOf[Bool]){
                     if(wStage == i){
                       hazards -= ((cond, state, rStage, wStage, rEn, wEn))
-                      println("wtf")
+                      //println("wtf")
                       //println(forwardCond)
                     }
                   }
@@ -1156,7 +1109,7 @@ abstract class Component(resetSignal: Bool = null) {
             val bypassMux = MuxCase(readPort.dataOut.asInstanceOf[Data], muxMapping)
             for (n <- consumerMap(readPort.dataOut)){
               if(n.getProducers().contains(readPort.dataOut)){
-                println("found consumers to modify")
+                //println("found consumers to modify")
               } 
               n.replaceProducer(readPort.dataOut, bypassMux)    
             }
