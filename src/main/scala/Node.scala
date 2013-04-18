@@ -105,6 +105,7 @@ abstract class Node extends nameable{
   var isPrintArg = false
   //automatic pipelining stuff
   var pipelinedVersion: Node = null
+  var unPipelinedVersion: Node = null
   def isMemOutput = false
   
   nodes += this
