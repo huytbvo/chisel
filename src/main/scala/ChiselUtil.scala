@@ -414,4 +414,70 @@ object PriorityEncoderOH
   }
 }
 
+class RdIO[T <: Data](depth: Int)(data: => T) extends Bundle {
+  val adr = Bits( INPUT,  log2Up(depth) ); 
+  val dat = data.asOutput; 
+}
+
+class WrIO[T <: Data](depth: Int)(data: => T) extends Bundle {
+  val is  = Bool( INPUT );                        
+  val adr = Bits( INPUT, log2Up(depth) ); 
+  val dat = data.asInput;                         
+}
+
+class FunRdIO[T <: Data](depth: Int)(data: => T) extends RdIO(depth)(data) {
+  adr := Bits(0);
+  def read(nadr: Bits): T = {
+    adr := nadr
+    dat
+  }
+}
+
+class FunWrIO[T <: Data](depth: Int)(data: => T) extends WrIO(depth)(data) {
+  is  := Bool(false)
+  adr := Bits(0)
+  dat := data.fromBits(Bits(0))
+  def write(nadr: Bits, ndat: T) = {
+    is  := conds.top
+    adr := nadr
+    dat := ndat
+  }
+}
+
+class FunMemIO[T <: Data](depth: Int, numReads: Int, numWrites: Int)(data: => T) extends Bundle {
+  val reads  = Vec(numReads)( new FunRdIO(depth)(data) )
+  val writes = Vec(numWrites)( new FunWrIO(depth)(data) )
+}
+
+class FunStore[T <: Data](val depth: Int, numReads: Int, numWrites: Int)(data: => T) extends Component {
+  val io = new FunMemIO(depth, numReads, numWrites)( data )
+}
+
+class FunMem[T <: Data](depth: Int, numReads: Int, numWrites: Int)(data: => T) 
+    extends FunStore(depth, numReads, numWrites)(data) {
+  val mem = Mem(depth)( data )
+  def read(addr: UFix, idx: Int = 0): T = io.reads(idx).read(addr)
+  def write(addr: UFix, data: T, idx: Int = 0) = io.writes(idx).write(addr, data)
+  for (read <- io.reads)
+    read.dat := mem.read(read.adr)
+  for (write <- io.writes)
+    when (write.is) { mem.write(write.adr, write.dat) }
+}
+
+class FunVecIO[T <: Data](depth: Int, numReads: Int, numWrites: Int)(data: => T) extends FunMemIO(depth, numReads, numWrites)(data) {
+  val direct = Vec(depth)( data.asOutput )
+  def read(adr: Int): T = direct(adr)
+}
+
+class FunVec[T <: Data](depth: Int, numReads: Int, numWrites: Int)(data: => T) 
+    extends FunStore(depth, numReads, numWrites)(data) {
+  override val io = new FunVecIO(depth, numReads, numWrites)( data )
+  val vec = Vec(depth)( Reg()( data ) )
+  for (read <- io.reads)
+    read.dat := vec.read(read.adr)
+  for (write <- io.writes)
+    when (write.is) { vec.write(write.adr, write.dat) }
+  for (i <- 0 until depth)
+    io.direct(i) := vec(i)
+}
 

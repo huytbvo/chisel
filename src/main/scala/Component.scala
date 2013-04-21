@@ -53,7 +53,8 @@ object Component {
   val tcomponents = new ArrayBuffer[TransactionalComponent]()
   var stages: HashMap[Node, Int] = null
   var cRegs: ArrayBuffer[Reg] = null
-  var cMems: ArrayBuffer[Mem[ Data ]] = null
+  //var cMems: ArrayBuffer[Mem[ Data ]] = null
+  var cFunMems: ArrayBuffer[FunMem[ Data ]] = null
   def getStage(n: Node): Int = {
     if (stages.contains(n))
       return stages(n)
@@ -64,7 +65,7 @@ object Component {
   val stalls = new HashMap[Int, ArrayBuffer[Bool]]
   val kills = new HashMap[Int, ArrayBuffer[Bool]]
   var globalStall: Bool = null
-  val hazards = new ArrayBuffer[(Bool, Delay, Int, Int, Bool, Bool)]
+  val hazards = new ArrayBuffer[(Bool, Delay, Int, Int, Bool, MemRead)]
 
   var resourceStream = getClass().getResourceAsStream("/emulator.h")
   var saveWidthWarnings = false
@@ -813,15 +814,20 @@ abstract class Component(resetSignal: Bool = null) {
     }
 
     cRegs = new ArrayBuffer[Reg]
-    cMems = new ArrayBuffer[Mem[ Data ]]
+    cFunMems = new ArrayBuffer[FunMem[Data]]
     compBfs(comp, 
             (n: Node) => {
-              if (n.isMem) cMems += n.asInstanceOf[Mem[ Data ] ]
+              //if (n.isMem) cMems += n.asInstanceOf[Mem[ Data ] ]
               if (n.isInstanceOf[Reg] && !isPipeLineReg(n)) cRegs += n.asInstanceOf[Reg]
             }
           )
-
-    // raw stalls
+    for(c <- comp.children){
+      if(c.isInstanceOf[FunMem[Data]]){
+        cFunMems += c.asInstanceOf[FunMem[Data]]
+      }
+    }
+    
+    //Reg hazards
     for (p <- cRegs) {
       if (p.updates.length > 1 && stages.contains(p)) {
         val enables = p.updates.map(_._1)
@@ -833,14 +839,39 @@ abstract class Component(resetSignal: Bool = null) {
           val wrStg = getStage(en)
           if (wrStg > rdStg) {
             scala.Predef.assert((wrStg - rdStg) == 1)
-            hazards += (((en && (if (wrStg > 0) valids(wrStg-1) else Bool(true))), p, rdStg, wrStg, Bool(true), Bool(true)))
+            hazards += (((en && (if (wrStg > 0) valids(wrStg-1) else Bool(true))), p, rdStg, wrStg, Bool(true), null))
             println("found hazard " + en.line.getLineNumber + " " + en.line.getClassName)
           }
         }
       }
     }
-
-    for (n <- cMems) {
+    // FunMem hazards
+    for (m <- cFunMems) {
+      for(writePoint <- m.io.writes){
+        val writeAddr = writePoint.adr.inputs(0).inputs(1)
+        val writeEn = writePoint.is.inputs(0).inputs(1)
+        val writeData = writePoint.dat.inputs(0).inputs(1)
+        val writeStage = getStage(writeEn)
+        val writeEnables = getVersions(writeEn.asInstanceOf[Bool])
+        val writeAddrs = getVersions(writeAddr.asInstanceOf[Bits])
+        Predef.assert(getStage(writeEn) == getStage(writeData))
+        Predef.assert(getStage(writeData) == getStage(writeAddr))
+        var foundHazard = false
+        var readStage = -1
+        for(readPoint <- m.io.reads){
+          val readAddr = readPoint.adr
+          readStage = getStage(readAddr)
+          if(writeStage > 0 && readStage > 0 && writeStage > readStage){
+            Predef.assert((getStage(writeEnables.last) - readStage) == 1, println(writeEnables.length))
+            Predef.assert(writeEnables.length == writeAddrs.length, println(writeEnables.length + " " + writeAddrs.length))
+            for((en, waddr) <- writeEnables zip writeAddrs){
+              hazards += ((en.asInstanceOf[Bool] && waddr === readPoint.adr, null, readStage, getStage(en), en.asInstanceOf[Bool], null))
+            }
+          }
+        }
+      }
+    }
+    /*for (n <- cMems) {
       for(i <- n.writes){
         val waddr = i.addr
         val enable = i.inputs(1)
@@ -858,13 +889,13 @@ abstract class Component(resetSignal: Bool = null) {
             scala.Predef.assert((getStage(enables.last) - rdStg) == 1, println(enables.length))
             scala.Predef.assert(enables.length == waddrs.length, println(enables.length + " " + waddrs.length))
             for ((en, w) <- enables zip waddrs) {
-              hazards += (((j.cond && en.asInstanceOf[Bool] && (w.asInstanceOf[Bits] === raddr.asInstanceOf[Bits])), n, rdStg, wrStg, j.cond, en.asInstanceOf[Bool]))
+              hazards += (((j.cond && en.asInstanceOf[Bool] && (w.asInstanceOf[Bits] === raddr.asInstanceOf[Bits])), n, rdStg, getStage(en), en.asInstanceOf[Bool], j))
               println("found hazard " + en.line.getLineNumber + " " + en.line.getClassName + " " + en.name + " " + n.name)
             }
           }
         }
       }
-    }
+    }*/
     
   }
   
@@ -875,9 +906,28 @@ abstract class Component(resetSignal: Bool = null) {
       if (cur.inputs(0).isInstanceOf[Reg]) {
         res += cur
         cur = cur.comp.updates(0)._2.asInstanceOf[Bits]
+        println("wtf0")
       } else if (cur.inputs(0).isInstanceOf[Bits]) {
         cur = cur.inputs(0).asInstanceOf[Bits]
+        println("wtf1")
       } else {
+        val visited = new HashSet[Node]
+        val dfsStack = new Stack[(Node, Int)]
+        val maxDepth = 4
+        dfsStack.push((cur, 0))
+        while(!dfsStack.isEmpty){
+          val currentNode = dfsStack.pop()
+          visited += currentNode._1
+          for(i <- 0 until currentNode._2){
+            print("<>")
+          }
+          println(currentNode._1)
+          for(i <- currentNode._1.inputs){
+            if(!visited.contains(i) & currentNode._2 <= maxDepth){
+              dfsStack.push((i, currentNode._2 + 1))
+            }
+          }
+        }
         return res
       }
     }
@@ -887,7 +937,7 @@ abstract class Component(resetSignal: Bool = null) {
   def resolveHazards() = {
 
     // raw stalls
-    for ((hazard, s, rdStg, wrStg, rEn, wEn) <- hazards) {
+    for ((hazard, s, rdStg, wrStg, wEn, rPort) <- hazards) {
       stalls(rdStg) += hazard
       kills(rdStg) += hazard
     }
@@ -916,13 +966,13 @@ abstract class Component(resetSignal: Bool = null) {
         r.genned = false
       }
     }
-    
+    /*
     for (m <- cMems) {
       for (wprt <- m.writes) {
         wprt.inputs(1) = wprt.inputs(1).asInstanceOf[Bits] && !stalls(getStage(wprt.inputs(1))).foldLeft(Bool(false))(_ || _) && !globalStall
       }
     }
-
+    */
   }
 
   def insertBubble(globalStall: Bool) = {
@@ -1026,7 +1076,7 @@ abstract class Component(resetSignal: Bool = null) {
     for(stateElement <- forwardedReadPoints){
       stateElement match {
         case r: Reg => {
-          //println("r stage " + stages(r))
+          println("r stage " + stages(r))
           val forwardPoints = new HashMap[Int, ArrayBuffer[(Node,Node)]]()
           for (i <- stages(r) + 1 to pipelineReg.size){
             forwardPoints(i) = new ArrayBuffer[(Node,Node)]()
@@ -1037,7 +1087,7 @@ abstract class Component(resetSignal: Bool = null) {
               forwardPoints(i) += ((findPastNodeVersion(writeEn, stages(writeEn) - i), findPastNodeVersion(writeData, stages(writeData) - i)))
             }
           }
-          //println(forwardPoints)
+          println(forwardPoints)
           val muxMapping = new ArrayBuffer[(Bool, Data)]()
           for(i <- stages(r) + 1 to pipelineReg.size){
             //generate muxes
@@ -1045,9 +1095,9 @@ abstract class Component(resetSignal: Bool = null) {
               for((j,k) <- forwardPoints(i)){
                 muxMapping += ((j.asInstanceOf[Bool], k.asInstanceOf[Data]))
                 //append forward condition to hazards list
-                for((cond, state, rStage, wStage, rEn, wEn) <- hazards){
+                for((cond, state, rStage, wStage, wEn, rPort) <- hazards){
                   if(state == r && wStage == i){
-                    hazards -= ((cond, state, rStage, wStage, rEn, wEn))
+                    hazards -= ((cond, state, rStage, wStage, wEn, rPort))
                   }
                 }
               }
@@ -1055,18 +1105,17 @@ abstract class Component(resetSignal: Bool = null) {
           }
           val bypassMux = MuxCase(consumerMap(r)(0).asInstanceOf[Data],muxMapping)
           for (n <- consumerMap(consumerMap(r)(0))){
-            //println(n + "'s producers")
-            //println(n.getProducers())
-            if(n.getProducers().contains(consumerMap(r)(0))){
-              //println("found consumers to modify")
-            } 
             n.replaceProducer(consumerMap(r)(0), bypassMux)
             
           }
         }
         case m: Mem[_] => {
-          //println("generating forwarding logic for Mems")
-          //println("annotated write points")
+          println("generating forwarding logic for Mems")
+          println("annotated write points")
+          println("hazards")
+          for(h <- hazards){
+            println(h)
+          }
           //println(memWritePoints)
           for(readPort <- m.reads){
             val forwardPoints = new HashMap[Int, ArrayBuffer[(Node, Node, Node)]]()
@@ -1084,23 +1133,27 @@ abstract class Component(resetSignal: Bool = null) {
                 forwardPoints(i) += ((findPastNodeVersion(delayedWriteEn, stages(delayedWriteEn) - i), findPastNodeVersion(delayedWriteData, stages(delayedWriteData) - i), findPastNodeVersion(delayedWriteAddr, stages(delayedWriteAddr) - i)))
               }
             }
-            //println("Mem forward points")
-            //println(forwardPoints)
+            println("Mem forward points")
+            println(forwardPoints)
             val muxMapping = new ArrayBuffer[(Bool, Data)]()
             for(i <- stages(readPort.addr) + 1 to pipelineReg.size){
               //generate muxes
               if(!forwardPoints(i).isEmpty){
+                println("has forwards from stage " + i)
                 for((writeEn, writeData, writeAddr) <- forwardPoints(i)){
                   val forwardCond = readPort.cond & writeEn.asInstanceOf[Bool] & writeAddr.asInstanceOf[Bits] === readPort.addr.asInstanceOf[Bits]
                   muxMapping += ((forwardCond, writeData.asInstanceOf[Data]))
                   //append forward condition to hazards list
-                  for((cond, state, rStage, wStage, rEn, wEn) <- hazards){
+                  for((cond, state, rStage, wStage, wEn, rPort) <- hazards){
                     //println((cond, state, rStage, wStage, rEn, wEn))
                     //if(wStage == i & rEn == readPort.cond & wEn == writeEn.asInstanceOf[Bool]){
-                    if(wStage == i){
-                      hazards -= ((cond, state, rStage, wStage, rEn, wEn))
-                      //println("wtf")
-                      //println(forwardCond)
+                    if(wStage == i & rPort == readPort){
+                      hazards -= ((cond, state, rStage, wStage, wEn, rPort))
+                      println("wtf " + i)
+                      println("rPort: " + System.identityHashCode(rPort))
+                      println("readPort: " + System.identityHashCode(readPort))
+                      println("wEn: " + System.identityHashCode(wEn))
+                      println("writeEn: " + System.identityHashCode(writeEn))
                     }
                   }
                 }
@@ -1108,9 +1161,6 @@ abstract class Component(resetSignal: Bool = null) {
             }
             val bypassMux = MuxCase(readPort.dataOut.asInstanceOf[Data], muxMapping)
             for (n <- consumerMap(readPort.dataOut)){
-              if(n.getProducers().contains(readPort.dataOut)){
-                //println("found consumers to modify")
-              } 
               n.replaceProducer(readPort.dataOut, bypassMux)    
             }
           }
