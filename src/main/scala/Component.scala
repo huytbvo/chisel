@@ -37,23 +37,26 @@ object Component {
   def addPipeReg(stage: Int, n: Node, rst: Bits) = {
     pipeline(stage) += (n -> rst)
   }
-  val forwardedReadPoints = new HashSet[Delay]
-  val memWritePoints = new HashMap[Mem[_], ArrayBuffer[(Node, Node, Node)]]
-  def addForwardedReadPoint(d: Delay) = {
-    Predef.assert(d.isInstanceOf[Reg] || d.isInstanceOf[Mem[_]])
-    forwardedReadPoints += d
+  val forwardedRegs = new HashSet[Reg]
+  val forwardedMemReadPoints = new HashSet[(FunMem[_], FunRdIO[_])]
+  val memNonForwardedWritePoints = new HashMap[FunMem[_], ArrayBuffer[FunWrIO[_]]]
+  def addForwardedReg(d: Reg) = {
+    forwardedRegs += d
   }
-  def addMemWritePoint(mem: Mem[_], writeEn: Node, writeData: Node, writeAddr: Node) = {
-    if(!memWritePoints.contains(mem)){
-      memWritePoints(mem) = new ArrayBuffer[(Node, Node, Node)](0)
+  def addForwardedMemReadPoint(m: FunMem[_], r: FunRdIO[_]) = {
+    forwardedMemReadPoints += ((m.asInstanceOf[FunMem[Data]], r.asInstanceOf[FunRdIO[Data]]))
+  }
+  def addNonWorwardedMemWritePoint[T <: Data] (mem: FunMem[T], writePoint: FunWrIO[T]) = {
+    if(!memNonForwardedWritePoints.contains(mem)){
+      memNonForwardedWritePoints(mem) = new ArrayBuffer[FunWrIO[_]](0)
     }
-    memWritePoints(mem) += ((writeEn, writeData, writeAddr))
+    memNonForwardedWritePoints(mem) += writePoint
   }
   
   val tcomponents = new ArrayBuffer[TransactionalComponent]()
   var stages: HashMap[Node, Int] = null
   var cRegs: ArrayBuffer[Reg] = null
-  //var cMems: ArrayBuffer[Mem[ Data ]] = null
+  var cMems: ArrayBuffer[Mem[ Data ]] = null
   var cFunMems: ArrayBuffer[FunMem[ Data ]] = null
   def getStage(n: Node): Int = {
     if (stages.contains(n))
@@ -814,10 +817,11 @@ abstract class Component(resetSignal: Bool = null) {
     }
 
     cRegs = new ArrayBuffer[Reg]
+    cMems = new ArrayBuffer[Mem[Data]]
     cFunMems = new ArrayBuffer[FunMem[Data]]
     compBfs(comp, 
             (n: Node) => {
-              //if (n.isMem) cMems += n.asInstanceOf[Mem[ Data ] ]
+              if (n.isMem) cMems += n.asInstanceOf[Mem[ Data ] ]
               if (n.isInstanceOf[Reg] && !isPipeLineReg(n)) cRegs += n.asInstanceOf[Reg]
             }
           )
@@ -866,6 +870,7 @@ abstract class Component(resetSignal: Bool = null) {
             Predef.assert(writeEnables.length == writeAddrs.length, println(writeEnables.length + " " + writeAddrs.length))
             for((en, waddr) <- writeEnables zip writeAddrs){
               hazards += ((en.asInstanceOf[Bool] && waddr === readPoint.adr, null, readStage, getStage(en), en.asInstanceOf[Bool], null))
+              println("found hazard" + en.line.getLineNumber + " " + en.line.getClassName + " " + en.name + " " + m.name)
             }
           }
         }
@@ -965,14 +970,12 @@ abstract class Component(resetSignal: Bool = null) {
         }
         r.genned = false
       }
-    }
-    /*
+    } 
     for (m <- cMems) {
       for (wprt <- m.writes) {
         wprt.inputs(1) = wprt.inputs(1).asInstanceOf[Bits] && !stalls(getStage(wprt.inputs(1))).foldLeft(Bool(false))(_ || _) && !globalStall
       }
     }
-    */
   }
 
   def insertBubble(globalStall: Bool) = {
@@ -1073,7 +1076,7 @@ abstract class Component(resetSignal: Bool = null) {
     }
     var consumerMap = getConsumers()
     println("generating forwarding logic")
-    for(stateElement <- forwardedReadPoints){
+    for(stateElement <- forwardedRegs){
       stateElement match {
         case r: Reg => {
           println("r stage " + stages(r))
@@ -1109,7 +1112,7 @@ abstract class Component(resetSignal: Bool = null) {
             
           }
         }
-        case m: Mem[_] => {
+        /*case m: Mem[_] => {
           println("generating forwarding logic for Mems")
           println("annotated write points")
           println("hazards")
@@ -1164,7 +1167,7 @@ abstract class Component(resetSignal: Bool = null) {
               n.replaceProducer(readPort.dataOut, bypassMux)    
             }
           }
-        }
+        }*/
         case _ =>
       }
     }
