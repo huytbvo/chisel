@@ -468,7 +468,7 @@ class CppBackend extends Backend {
     c.genAllMuxes
     c.colorPipelineStages()
     c.findHazards()
-    //c.generateForwardingLogic()
+    c.generateForwardingLogic()
     c.resolveHazards()
     c.genAllMuxes
     c.inferAll

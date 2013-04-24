@@ -158,4 +158,13 @@ class Reg extends Delay with proc {
     if (inputs(0).width != width) inputs(0) = inputs(0).matchWidth(width)
     if (inputs.length > 1 && inputs(1).width != width) inputs(1) = inputs(1).matchWidth(width)
   }
+  
+  override def getProducers(): Seq[Node] = {
+    val producers = new collection.mutable.ListBuffer[Node];
+    for((i,j) <- updates){
+      producers += i
+      producers += j
+    }
+    producers
+  }
 }

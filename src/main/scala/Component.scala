@@ -39,18 +39,15 @@ object Component {
   }
   val forwardedRegs = new HashSet[Reg]
   val forwardedMemReadPoints = new HashSet[(FunMem[_], FunRdIO[_])]
-  val memNonForwardedWritePoints = new HashMap[FunMem[_], ArrayBuffer[FunWrIO[_]]]
+  val memNonForwardedWritePoints = new HashSet[FunWrIO[_]]
   def addForwardedReg(d: Reg) = {
     forwardedRegs += d
   }
   def addForwardedMemReadPoint(m: FunMem[_], r: FunRdIO[_]) = {
     forwardedMemReadPoints += ((m.asInstanceOf[FunMem[Data]], r.asInstanceOf[FunRdIO[Data]]))
   }
-  def addNonWorwardedMemWritePoint[T <: Data] (mem: FunMem[T], writePoint: FunWrIO[T]) = {
-    if(!memNonForwardedWritePoints.contains(mem)){
-      memNonForwardedWritePoints(mem) = new ArrayBuffer[FunWrIO[_]](0)
-    }
-    memNonForwardedWritePoints(mem) += writePoint
+  def addNonForwardedMemWritePoint[T <: Data] (mem: FunMem[T], writePoint: FunWrIO[T]) = {
+    memNonForwardedWritePoints += writePoint
   }
   
   val tcomponents = new ArrayBuffer[TransactionalComponent]()
@@ -68,7 +65,7 @@ object Component {
   val stalls = new HashMap[Int, ArrayBuffer[Bool]]
   val kills = new HashMap[Int, ArrayBuffer[Bool]]
   var globalStall: Bool = null
-  val hazards = new ArrayBuffer[(Bool, Delay, Int, Int, Bool, MemRead)]
+  val hazards = new ArrayBuffer[(Bool, Delay, Int, Int, Bool, FunRdIO[Data])]
 
   var resourceStream = getClass().getResourceAsStream("/emulator.h")
   var saveWidthWarnings = false
@@ -869,7 +866,7 @@ abstract class Component(resetSignal: Bool = null) {
             Predef.assert((getStage(writeEnables.last) - readStage) == 1, println(writeEnables.length))
             Predef.assert(writeEnables.length == writeAddrs.length, println(writeEnables.length + " " + writeAddrs.length))
             for((en, waddr) <- writeEnables zip writeAddrs){
-              hazards += ((en.asInstanceOf[Bool] && waddr === readPoint.adr, null, readStage, getStage(en), en.asInstanceOf[Bool], null))
+              hazards += ((en.asInstanceOf[Bool] && waddr === readPoint.adr, null, readStage, getStage(en), en.asInstanceOf[Bool], readPoint))
               println("found hazard" + en.line.getLineNumber + " " + en.line.getClassName + " " + en.name + " " + m.name)
             }
           }
@@ -909,14 +906,14 @@ abstract class Component(resetSignal: Bool = null) {
     var cur = b
     while (cur.inputs.length == 1) {
       if (cur.inputs(0).isInstanceOf[Reg]) {
-        res += cur
+        if(!isPipeLineReg(cur)){
+          res += cur
+        }
         cur = cur.comp.updates(0)._2.asInstanceOf[Bits]
-        println("wtf0")
       } else if (cur.inputs(0).isInstanceOf[Bits]) {
         cur = cur.inputs(0).asInstanceOf[Bits]
-        println("wtf1")
       } else {
-        val visited = new HashSet[Node]
+        /*val visited = new HashSet[Node]
         val dfsStack = new Stack[(Node, Int)]
         val maxDepth = 4
         dfsStack.push((cur, 0))
@@ -932,7 +929,7 @@ abstract class Component(resetSignal: Bool = null) {
               dfsStack.push((i, currentNode._2 + 1))
             }
           }
-        }
+        }*/
         return res
       }
     }
@@ -998,75 +995,6 @@ abstract class Component(resetSignal: Bool = null) {
   }
   
   def generateForwardingLogic() = {
-    def findEarliestStageAvail(n: Node) : Int = {
-      var currentNode = n
-      var stagesAhead = 0
-      var hasOneProducer = false
-      currentNode match {
-        case r: Reg => {
-          hasOneProducer = r.updates.length == 1
-        }
-        case m: Mem[_] => {
-          hasOneProducer = false
-        }
-        case n: Node => {
-          hasOneProducer = n.getProducers().length == 1
-        }
-        case _ =>
-      }
-      while(hasOneProducer){
-        currentNode match {
-          case r: Reg => {
-            hasOneProducer = r.updates.length == 1
-            if(hasOneProducer){
-              currentNode = r.updates(0)._2
-              if(isPipeLineReg(r)){
-                stagesAhead = stagesAhead + 1
-              }
-            }
-          }
-          case m: Mem[_] => {
-            hasOneProducer = false
-          }
-          case n: Node => {
-            hasOneProducer = n.getProducers().length == 1
-            if(hasOneProducer){
-              currentNode = n.getProducers()(0)
-            }
-          }
-          case _ =>
-        }      
-      }
-      stagesAhead
-    }
-    def findPastNodeVersion(n: Node, i: Int) : Node = {
-      var currentNode = n
-      var j = i
-      while(j > 0){
-        currentNode match {
-          case r: Reg => {
-            Predef.assert(r.updates.length == 1)
-            currentNode = r.updates(0)._2
-            if(isPipeLineReg(r)){
-              j = j -1
-            }
-          }
-          case m: Mem[_] => {
-            Predef.assert(false)
-          }
-          case n: Node => {
-            if(j == 1){
-              j = j - 1
-            } else {
-              Predef.assert(n.getProducers().length == 1)
-              currentNode = n.getProducers()(0)
-            }
-          }
-          case _ =>
-        }      
-      }
-      currentNode
-    }
     def getPipelinedVersion(n: Node): Node = {
       var result = n
       if (n.pipelinedVersion != null){
@@ -1075,102 +1003,138 @@ abstract class Component(resetSignal: Bool = null) {
       result
     }
     var consumerMap = getConsumers()
-    println("generating forwarding logic")
-    for(stateElement <- forwardedRegs){
-      stateElement match {
-        case r: Reg => {
-          println("r stage " + stages(r))
-          val forwardPoints = new HashMap[Int, ArrayBuffer[(Node,Node)]]()
-          for (i <- stages(r) + 1 to pipelineReg.size){
-            forwardPoints(i) = new ArrayBuffer[(Node,Node)]()
-          } 
-          for ((writeEn, writeData) <- r.updates){Predef.assert(stages(writeEn) == stages(writeData))
-            val earliestForwardingStage = stages(writeEn) - Math.min(findEarliestStageAvail(writeEn), findEarliestStageAvail(writeData))
-            for(i <- stages(r) + 1 to stages(writeEn)) {
-              forwardPoints(i) += ((findPastNodeVersion(writeEn, stages(writeEn) - i), findPastNodeVersion(writeData, stages(writeData) - i)))
-            }
-          }
-          println(forwardPoints)
-          val muxMapping = new ArrayBuffer[(Bool, Data)]()
-          for(i <- stages(r) + 1 to pipelineReg.size){
-            //generate muxes
-            if(!forwardPoints(i).isEmpty){     
-              for((j,k) <- forwardPoints(i)){
-                muxMapping += ((j.asInstanceOf[Bool], k.asInstanceOf[Data]))
-                //append forward condition to hazards list
-                for((cond, state, rStage, wStage, wEn, rPort) <- hazards){
-                  if(state == r && wStage == i){
-                    hazards -= ((cond, state, rStage, wStage, wEn, rPort))
-                  }
-                }
+    for(r <- forwardedRegs){
+      val forwardPoints = new HashMap[Int, ArrayBuffer[(Node,Node)]]()
+      for (i <- stages(r) + 1 to pipelineReg.size){
+        forwardPoints(i) = new ArrayBuffer[(Node,Node)]()
+      } 
+      for ((writeEn, writeData) <- r.updates){Predef.assert(stages(writeEn) == stages(writeData))
+        val writeEns = getVersions(writeEn)
+        val writeDatas = getVersions(writeData.asInstanceOf[Bits])
+        val numStagesAvail = Math.min(writeEns.length, writeDatas.length)
+        for(i <- 0 until numStagesAvail) {
+          forwardPoints(stages(writeEn) - i) += ((writeEns(i), writeDatas(i)))
+        }
+      }
+      val muxMapping = new ArrayBuffer[(Bool, Data)]()
+      for(i <- stages(r) + 1 to pipelineReg.size){
+        //generate muxes
+        if(!forwardPoints(i).isEmpty){     
+          for((j,k) <- forwardPoints(i)){
+            muxMapping += ((j.asInstanceOf[Bool], k.asInstanceOf[Data]))
+            //append forward condition to hazards list
+            for((cond, state, rStage, wStage, wEn, rPort) <- hazards){
+              if(state == r && wStage == i){
+                hazards -= ((cond, state, rStage, wStage, wEn, rPort))
               }
             }
-          }
-          val bypassMux = MuxCase(consumerMap(r)(0).asInstanceOf[Data],muxMapping)
-          for (n <- consumerMap(consumerMap(r)(0))){
-            n.replaceProducer(consumerMap(r)(0), bypassMux)
-            
           }
         }
-        /*case m: Mem[_] => {
-          println("generating forwarding logic for Mems")
-          println("annotated write points")
-          println("hazards")
-          for(h <- hazards){
-            println(h)
+      }
+      val bypassMux = MuxCase(consumerMap(r)(0).asInstanceOf[Data],muxMapping)
+      for (n <- consumerMap(consumerMap(r)(0))){
+        n.replaceProducer(consumerMap(r)(0), bypassMux)
+      }
+    }
+    for((fm, rp) <- forwardedMemReadPoints){
+      val forwardPoints = new HashMap[Int, ArrayBuffer[(Node, Node, Node)]]()
+      for (i <- stages(rp.adr) + 1 to pipelineReg.size){
+        forwardPoints(i) = new ArrayBuffer[(Node,Node,Node)]()
+      }
+      for(i <- 0 until fm.io.writes.length){
+        val writePoint = fm.io.writes(i)
+        if(!memNonForwardedWritePoints.contains(writePoint)){
+          val delayedWriteEn = getPipelinedVersion(writePoint.is.inputs(0).inputs(1))
+          val delayedWriteData = getPipelinedVersion(writePoint.dat.asInstanceOf[Node].inputs(0).inputs(1))
+          val delayedWriteAddr = getPipelinedVersion(writePoint.adr.inputs(0).inputs(1))
+          Predef.assert(stages(delayedWriteEn) == stages(delayedWriteData))
+          Predef.assert(stages(delayedWriteEn) == stages(delayedWriteAddr))
+          val writeEns = getVersions(delayedWriteEn.asInstanceOf[Bits])
+          val writeDatas = getVersions(delayedWriteData.asInstanceOf[Bits])
+          val writeAddrs = getVersions(delayedWriteAddr.asInstanceOf[Bits])
+          val numStagesAvail = Math.min(writeEns.length, Math.min(writeDatas.length, writeAddrs.length))
+          for(i <- 0 until numStagesAvail){
+            forwardPoints(stages(delayedWriteEn) - i) += ((writeEns(i), writeDatas(i), writeAddrs(i))) 
           }
-          //println(memWritePoints)
-          for(readPort <- m.reads){
-            val forwardPoints = new HashMap[Int, ArrayBuffer[(Node, Node, Node)]]()
-            for (i <- stages(readPort.addr) + 1 to pipelineReg.size){
-              forwardPoints(i) = new ArrayBuffer[(Node,Node,Node)]()
-            }
-            for((writeEn, writeData, writeAddr) <- memWritePoints(m)){
-              val delayedWriteEn = getPipelinedVersion(writeEn)
-              val delayedWriteData = getPipelinedVersion(writeData)
-              val delayedWriteAddr = getPipelinedVersion(writeAddr)
-              Predef.assert(stages(delayedWriteEn) == stages(delayedWriteData))
-              Predef.assert(stages(delayedWriteEn) == stages(delayedWriteAddr))
-              val earliestForwardingStage = stages(delayedWriteEn) - Math.min(findEarliestStageAvail(delayedWriteEn), Math.min(findEarliestStageAvail(delayedWriteData), findEarliestStageAvail(delayedWriteAddr)))
-              for(i <- stages(readPort.addr) + 1 to stages(delayedWriteEn)){
-                forwardPoints(i) += ((findPastNodeVersion(delayedWriteEn, stages(delayedWriteEn) - i), findPastNodeVersion(delayedWriteData, stages(delayedWriteData) - i), findPastNodeVersion(delayedWriteAddr, stages(delayedWriteAddr) - i)))
+        }
+      }
+      val muxMapping = new ArrayBuffer[(Bool, Data)]()
+      for(i <- stages(rp.adr) + 1 to pipelineReg.size){
+        //generate muxes
+        if(!forwardPoints(i).isEmpty){
+          for((writeEn, writeData, writeAddr) <- forwardPoints(i)){
+            val forwardCond = writeEn.asInstanceOf[Bool] & writeAddr.asInstanceOf[Bits] === rp.adr.asInstanceOf[Bits]
+            muxMapping += ((forwardCond, writeData.asInstanceOf[Data]))
+            //append forward condition to hazards list
+            for((cond, state, rStage, wStage, wEn, rPort) <- hazards){
+              if(wStage == i & wEn == writeEn.asInstanceOf[Bool] & rp == rPort){
+                hazards -= ((cond, state, rStage, wStage, wEn, rPort))
               }
             }
-            println("Mem forward points")
-            println(forwardPoints)
-            val muxMapping = new ArrayBuffer[(Bool, Data)]()
-            for(i <- stages(readPort.addr) + 1 to pipelineReg.size){
-              //generate muxes
-              if(!forwardPoints(i).isEmpty){
-                println("has forwards from stage " + i)
-                for((writeEn, writeData, writeAddr) <- forwardPoints(i)){
-                  val forwardCond = readPort.cond & writeEn.asInstanceOf[Bool] & writeAddr.asInstanceOf[Bits] === readPort.addr.asInstanceOf[Bits]
-                  muxMapping += ((forwardCond, writeData.asInstanceOf[Data]))
-                  //append forward condition to hazards list
-                  for((cond, state, rStage, wStage, wEn, rPort) <- hazards){
-                    //println((cond, state, rStage, wStage, rEn, wEn))
-                    //if(wStage == i & rEn == readPort.cond & wEn == writeEn.asInstanceOf[Bool]){
-                    if(wStage == i & rPort == readPort){
-                      hazards -= ((cond, state, rStage, wStage, wEn, rPort))
-                      println("wtf " + i)
-                      println("rPort: " + System.identityHashCode(rPort))
-                      println("readPort: " + System.identityHashCode(readPort))
-                      println("wEn: " + System.identityHashCode(wEn))
-                      println("writeEn: " + System.identityHashCode(writeEn))
-                    }
-                  }
+          }
+        }
+      }
+      val bypassMux = MuxCase(rp.dat.asInstanceOf[Data], muxMapping)
+      for (n <- consumerMap(rp.dat.asInstanceOf[Node])){
+        n.replaceProducer(rp.dat.asInstanceOf[Node], bypassMux)    
+      }
+    }
+    /*case m: Mem[_] => {
+      println("generating forwarding logic for Mems")
+      println("annotated write points")
+      println("hazards")
+      for(h <- hazards){
+        println(h)
+      }
+      //println(memWritePoints)
+      for(readPort <- m.reads){
+        val forwardPoints = new HashMap[Int, ArrayBuffer[(Node, Node, Node)]]()
+        for (i <- stages(readPort.addr) + 1 to pipelineReg.size){
+          forwardPoints(i) = new ArrayBuffer[(Node,Node,Node)]()
+        }
+        for((writeEn, writeData, writeAddr) <- memWritePoints(m)){
+          val delayedWriteEn = getPipelinedVersion(writeEn)
+          val delayedWriteData = getPipelinedVersion(writeData)
+          val delayedWriteAddr = getPipelinedVersion(writeAddr)
+          Predef.assert(stages(delayedWriteEn) == stages(delayedWriteData))
+          Predef.assert(stages(delayedWriteEn) == stages(delayedWriteAddr))
+          val earliestForwardingStage = stages(delayedWriteEn) - Math.min(findEarliestStageAvail(delayedWriteEn), Math.min(findEarliestStageAvail(delayedWriteData), findEarliestStageAvail(delayedWriteAddr)))
+          for(i <- stages(readPort.addr) + 1 to stages(delayedWriteEn)){
+            forwardPoints(i) += ((findPastNodeVersion(delayedWriteEn, stages(delayedWriteEn) - i), findPastNodeVersion(delayedWriteData, stages(delayedWriteData) - i), findPastNodeVersion(delayedWriteAddr, stages(delayedWriteAddr) - i)))
+          }
+        }
+        println("Mem forward points")
+        println(forwardPoints)
+        val muxMapping = new ArrayBuffer[(Bool, Data)]()
+        for(i <- stages(readPort.addr) + 1 to pipelineReg.size){
+          //generate muxes
+          if(!forwardPoints(i).isEmpty){
+            println("has forwards from stage " + i)
+            for((writeEn, writeData, writeAddr) <- forwardPoints(i)){
+              val forwardCond = readPort.cond & writeEn.asInstanceOf[Bool] & writeAddr.asInstanceOf[Bits] === readPort.addr.asInstanceOf[Bits]
+              muxMapping += ((forwardCond, writeData.asInstanceOf[Data]))
+              //append forward condition to hazards list
+              for((cond, state, rStage, wStage, wEn, rPort) <- hazards){
+                //println((cond, state, rStage, wStage, rEn, wEn))
+                //if(wStage == i & rEn == readPort.cond & wEn == writeEn.asInstanceOf[Bool]){
+                if(wStage == i & rPort == readPort){
+                  hazards -= ((cond, state, rStage, wStage, wEn, rPort.asInstanceOf[FunRdIO[Data]]))
+                  println("wtf " + i)
+                  println("rPort: " + System.identityHashCode(rPort))
+                  println("readPort: " + System.identityHashCode(readPort))
+                  println("wEn: " + System.identityHashCode(wEn))
+                  println("writeEn: " + System.identityHashCode(writeEn))
                 }
               }
             }
-            val bypassMux = MuxCase(readPort.dataOut.asInstanceOf[Data], muxMapping)
-            for (n <- consumerMap(readPort.dataOut)){
-              n.replaceProducer(readPort.dataOut, bypassMux)    
-            }
           }
-        }*/
-        case _ =>
+        }
+        val bypassMux = MuxCase(readPort.dataOut.asInstanceOf[Data], muxMapping)
+        for (n <- consumerMap(readPort.dataOut)){
+          n.replaceProducer(readPort.dataOut, bypassMux)    
+        }
       }
-    }
+    }*/
   }
   
   def findConsumers() = {
