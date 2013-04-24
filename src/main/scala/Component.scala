@@ -22,6 +22,7 @@ import ChiselError._
 object Component {
   // automatic pipeline stuff
   var pipeline = new HashMap[Int, ArrayBuffer[(Node, Bits)]]()
+  val chckStg = new ArrayBuffer[Bits]()
   var pipelineComponent: Component = null
   var pipelineReg = new HashMap[Int, ArrayBuffer[Reg]]()
   def setNumStages(x: Int) = {
@@ -32,6 +33,7 @@ object Component {
     for (i <- 0 until x) {
       stalls += (i -> new ArrayBuffer[Bool])
       kills += (i -> new ArrayBuffer[Bool])
+      speckills += (i -> new ArrayBuffer[Bool])
     }
   }
   def addPipeReg(stage: Int, n: Node, rst: Bits) = {
@@ -49,7 +51,12 @@ object Component {
   def addNonForwardedMemWritePoint[T <: Data] (mem: FunMem[T], writePoint: FunWrIO[T]) = {
     memNonForwardedWritePoints += writePoint
   }
-  
+
+  val speculation = new ArrayBuffer[(Bits, Bits)]
+  def speculate(s: Bits, v: Bits) = {
+    speculation += ((s, v))
+  }
+
   val tcomponents = new ArrayBuffer[TransactionalComponent]()
   var stages: HashMap[Node, Int] = null
   var cRegs: ArrayBuffer[Reg] = null
@@ -64,6 +71,7 @@ object Component {
   val valids = new ArrayBuffer[Bool]
   val stalls = new HashMap[Int, ArrayBuffer[Bool]]
   val kills = new HashMap[Int, ArrayBuffer[Bool]]
+  val speckills = new HashMap[Int, ArrayBuffer[Bool]]
   var globalStall: Bool = null
   val hazards = new ArrayBuffer[(Bool, Delay, Int, Int, Bool, FunRdIO[Data])]
 
@@ -575,7 +583,7 @@ abstract class Component(resetSignal: Bool = null) {
           map += (i -> new ArrayBuffer[Node])
         }
         //if(!map(i).contains(node))
-          map(i) += node
+        map(i) += node
       }
     }
 
@@ -729,7 +737,7 @@ abstract class Component(resetSignal: Bool = null) {
         }
         //handle visit
         //only need to do stuff if currentNode does not already have a stage number
-        if(!coloredNodes.contains(currentNode) & !currentNode.isMem){
+        if(!coloredNodes.contains(currentNode) & !currentNode.isMem & (currentNode.litOf == null)){
           if(currentNode.isReg && !isPipeLineReg(currentNode)){
             val consumerStageNum = resolvedConsumerStage(currentNode, true)
             if(consumerStageNum > -1){
@@ -829,17 +837,29 @@ abstract class Component(resetSignal: Bool = null) {
     }
     
     //Reg hazards
+    for (b <- chckStg)
+      println("HUY: " + b.name + " " + getStage(b))
+
+    // raw stalls
+    val specRegs = speculation.map(_._1.comp.asInstanceOf[Reg])
+    cRegs = cRegs.filter(!specRegs.contains(_))
     for (p <- cRegs) {
       if (p.updates.length > 1 && stages.contains(p)) {
         val enables = p.updates.map(_._1)
         val enStgs = enables.map(getStage(_)).filter(_ > -1)
         val stage = enStgs.head
+        if (p.name == "pc_reg") println(enables.map(getStage(_)) + " " + p.updates.map(_._2).map(getStage(_)) + " RD: " + getStage(p))
         scala.Predef.assert(enStgs.tail.map( _ == stage).foldLeft(true)(_ && _), println(p.line.getLineNumber + " " + p.line.getClassName + " " + enStgs)) // check all the stgs match
         val rdStg = getStage(p)
         for (en <- enables) {
           val wrStg = getStage(en)
           if (wrStg > rdStg) {
-            scala.Predef.assert((wrStg - rdStg) == 1)
+            if (wrStg - rdStg > 1) {
+              val rdStgValid = if (rdStg == 0) Bool(true) else valids(rdStg-1)
+              for (stg <- rdStg + 1 until wrStg) {
+                hazards += ((rdStgValid && valids(stg-1), p, rdStg, stg, Bool(true), null))
+              }
+            }
             hazards += (((en && (if (wrStg > 0) valids(wrStg-1) else Bool(true))), p, rdStg, wrStg, Bool(true), null))
             println("found hazard " + en.line.getLineNumber + " " + en.line.getClassName)
           }
@@ -873,7 +893,8 @@ abstract class Component(resetSignal: Bool = null) {
         }
       }
     }
-    /*for (n <- cMems) {
+
+    for (n <- cMems) {
       for(i <- n.writes){
         val waddr = i.addr
         val enable = i.inputs(1)
@@ -897,7 +918,7 @@ abstract class Component(resetSignal: Bool = null) {
           }
         }
       }
-    }*/
+    }
     
   }
   
@@ -949,11 +970,15 @@ abstract class Component(resetSignal: Bool = null) {
       for (nstg <- stg + 1 until stalls.size)
         stalls(stg) ++= stalls(nstg)
 
-    insertBubble(globalStall)
-      
+    for ((s, v) <- speculation)
+      cRegs += s.comp.asInstanceOf[Reg]
+
+    val wStageMap = new HashMap[Reg, Int]()
+
     for ((r, ind) <- (cRegs zip cRegs.indices)) {
       if (r.updates.length > 1 && stages.contains(r)) {
         val enStg = r.updates.map(_._1).map(getStage(_)).filter(_ > -1)(0)
+        wStageMap += (r -> enStg)
         var mask = Bool(false)
         if(stalls(enStg).length > 0)
           mask = mask || stalls(enStg).reduceLeft(_ || _) // raw
@@ -967,7 +992,40 @@ abstract class Component(resetSignal: Bool = null) {
         }
         r.genned = false
       }
-    } 
+    }
+
+    // speculation stuff
+    for ((s, v) <- speculation) {
+      val sStage = getStage(s)
+      val reg = s.comp.asInstanceOf[Reg]
+      val wStage = wStageMap(reg)
+      var mask = stalls(sStage).reduceLeft(_ || _) || globalStall // stall
+
+      var spec = v
+      for (stg <- sStage until wStage) {
+        val specReg = Reg(resetVal = Bits(0))
+        specReg := spec
+        specReg.name_it("Huy_specReg_" + stg, true)
+        pipelineReg(stg) += specReg.comp.asInstanceOf[Reg]
+        spec = specReg
+      }
+
+      val b = Bits()
+      b.inputs += s.comp.inputs(0)
+      val kill = (valids(wStage-1) && spec != b)
+      for (i <- 0 until reg.updates.length) {
+        val en = reg.updates(i)._1
+        reg.updates(i) = ((en && kill, reg.updates(i)._2))
+      }
+      val default = !mask && !kill
+      default.name_it("Huy_doSpec", true)
+      reg.updates += ((default, v))
+      for (stg <- sStage until wStage)
+        speckills(stg) += kill
+    }
+
+    insertBubble(globalStall)
+    
     for (m <- cMems) {
       for (wprt <- m.writes) {
         wprt.inputs(1) = wprt.inputs(1).asInstanceOf[Bits] && !stalls(getStage(wprt.inputs(1))).foldLeft(Bool(false))(_ || _) && !globalStall
@@ -979,15 +1037,18 @@ abstract class Component(resetSignal: Bool = null) {
     for (stage <- 0 until pipelineReg.size) {
       val stall = stalls(stage+1).foldLeft(Bool(false))(_ || _)
       val kill = kills(stage).foldLeft(Bool(false))(_ || _)
+      val speckill = speckills(stage).foldLeft(Bool(false))(_ || _)
       for (r <- pipelineReg(stage)) {
         r.updates += ((kill, r.resetVal))
         r.updates += ((stall, r))
+        r.updates += ((speckill, r.resetVal))
         r.updates += ((globalStall, r))
         r.genned = false
       }
       val valid = valids(stage).comp
       valid.updates += ((kill, Bool(false)))
       valid.updates += ((stall, valid))
+      valid.updates += ((speckill, Bool(false)))
       valid.updates += ((globalStall, valid))
       valid.genned = false
     }
