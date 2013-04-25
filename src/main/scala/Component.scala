@@ -912,7 +912,7 @@ abstract class Component(resetSignal: Bool = null) {
             scala.Predef.assert((getStage(enables.last) - rdStg) == 1, println(enables.length))
             scala.Predef.assert(enables.length == waddrs.length, println(enables.length + " " + waddrs.length))
             for ((en, w) <- enables zip waddrs) {
-              hazards += (((j.cond && en.asInstanceOf[Bool] && (w.asInstanceOf[Bits] === raddr.asInstanceOf[Bits])), n, rdStg, getStage(en), en.asInstanceOf[Bool], j))
+              hazards += (((j.cond && en.asInstanceOf[Bool] && (w.asInstanceOf[Bits] === raddr.asInstanceOf[Bits])), n, rdStg, getStage(en), en.asInstanceOf[Bool], null))
               println("found hazard " + en.line.getLineNumber + " " + en.line.getClassName + " " + en.name + " " + n.name)
             }
           }
