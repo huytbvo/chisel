@@ -48,7 +48,7 @@ object Component {
   def addForwardedMemReadPoint(m: FunMem[_], r: FunRdIO[_]) = {
     forwardedMemReadPoints += ((m.asInstanceOf[FunMem[Data]], r.asInstanceOf[FunRdIO[Data]]))
   }
-  def addNonForwardedMemWritePoint[T <: Data] (mem: FunMem[T], writePoint: FunWrIO[T]) = {
+  def addNonForwardedMemWritePoint[T <: Data] (writePoint: FunWrIO[T]) = {
     memNonForwardedWritePoints += writePoint
   }
 
@@ -894,7 +894,7 @@ abstract class Component(resetSignal: Bool = null) {
       }
     }
 
-    for (n <- cMems) {
+    /*for (n <- cMems) {
       for(i <- n.writes){
         val waddr = i.addr
         val enable = i.inputs(1)
@@ -918,7 +918,7 @@ abstract class Component(resetSignal: Bool = null) {
           }
         }
       }
-    }
+    }*/
     
   }
   
@@ -1115,6 +1115,7 @@ abstract class Component(resetSignal: Bool = null) {
           val writeAddrs = getVersions(delayedWriteAddr.asInstanceOf[Bits])
           val numStagesAvail = Math.min(writeEns.length, Math.min(writeDatas.length, writeAddrs.length))
           for(i <- 0 until numStagesAvail){
+            println("found fowarding point ("+ writeEns(i) + "," + writeDatas(i) + "," + writeAddrs(i) + ")")
             forwardPoints(stages(delayedWriteEn) - i) += ((writeEns(i), writeDatas(i), writeAddrs(i))) 
           }
         }
