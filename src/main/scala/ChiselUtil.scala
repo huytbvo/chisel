@@ -453,13 +453,48 @@ class FunStore[T <: Data](val depth: Int, numReads: Int, numWrites: Int)(data: =
   val io = new FunMemIO(depth, numReads, numWrites)( data )
 }
 
-class FunMem[T <: Data](depth: Int, numReads: Int, numWrites: Int)(data: => T) 
-    extends FunStore(depth, numReads, numWrites)(data) {
+class FunMem[T <: Data](depth: Int, numReads: Int, numVirtWrites: Int, numPhyWrites: Int)(data: => T) 
+    extends FunStore(depth, numReads, numVirtWrites)(data) {
   val mem = Mem(depth)( data )
   def read(addr: UFix, idx: Int = 0): T = io.reads(idx).read(addr)
   def write(addr: UFix, data: T, idx: Int = 0) = io.writes(idx).write(addr, data)
   for (read <- io.reads)
     read.dat := mem.read(read.adr)
+  var roundUp = 0
+  /*if(numVirtWrites%numPhyWrites > 0){
+    roundUp = 1
+  }
+  val virtPerPhys = numVirtWrites/numPhyWrites + roundUp
+  val ens = Vec(numPhyWrites){Bool()}
+  val addrs = Vec(numPhyWrites){Bits()}
+  val datas = Vec(numPhyWrites){Bits()}
+  for(i <- 0 until numVirtWrites/virtPerPhys){
+    var en = Bool(false)
+    var addr = Bits(); addr := Bits(0)
+    var data = Bits(); data := Bits(0)
+    for(j <- 0 until virtPerPhys){
+      en = en || io.writes(i*virtPerPhys + j).is
+      println("WTF")
+      println(en)
+      when (io.writes(i*virtPerPhys + j).is){
+        addr := io.writes(i*virtPerPhys + j).adr
+        data := io.writes(i*virtPerPhys + j).dat
+      }
+    }
+    ens(i) := en
+    addrs(i) := addr
+    datas(i) := data
+  }
+  for(i <- numVirtWrites/virtPerPhys until numPhyWrites){
+    ens(i) := Bool(false)
+    addrs(i) := Bits(0)
+    datas(i) := Bits(0)
+  }
+  for(i <- 0 until numPhyWrites){
+    when(ens(i)){
+      mem.write(addrs(i), datas(i).asInstanceOf[T])
+    }
+  }*/
   for (write <- io.writes)
     when (write.is) { mem.write(write.adr, write.dat) }
 }
