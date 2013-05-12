@@ -474,8 +474,6 @@ class FunMem[T <: Data](depth: Int, numReads: Int, numVirtWrites: Int, numPhyWri
     var data = Bits(); data := Bits(0)
     for(j <- 0 until virtPerPhys){
       en = en || io.writes(i*virtPerPhys + j).is
-      println("WTF")
-      println(en)
       when (io.writes(i*virtPerPhys + j).is){
         addr := io.writes(i*virtPerPhys + j).adr
         data := io.writes(i*virtPerPhys + j).dat
