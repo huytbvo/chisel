@@ -461,7 +461,7 @@ class FunMem[T <: Data](depth: Int, numReads: Int, numVirtWrites: Int, numPhyWri
   for (read <- io.reads)
     read.dat := mem.read(read.adr)
   var roundUp = 0
-  /*if(numVirtWrites%numPhyWrites > 0){
+  if(numVirtWrites%numPhyWrites > 0){
     roundUp = 1
   }
   val virtPerPhys = numVirtWrites/numPhyWrites + roundUp
@@ -494,9 +494,9 @@ class FunMem[T <: Data](depth: Int, numReads: Int, numVirtWrites: Int, numPhyWri
     when(ens(i)){
       mem.write(addrs(i), datas(i).asInstanceOf[T])
     }
-  }*/
-  for (write <- io.writes)
-    when (write.is) { mem.write(write.adr, write.dat) }
+  }
+  /*for (write <- io.writes)
+    when (write.is) { mem.write(write.adr, write.dat) }*/
 }
 
 class FunVecIO[T <: Data](depth: Int, numReads: Int, numWrites: Int)(data: => T) extends FunMemIO(depth, numReads, numWrites)(data) {
