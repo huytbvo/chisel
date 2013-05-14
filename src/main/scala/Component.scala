@@ -40,13 +40,13 @@ object Component {
     pipeline(stage) += (n -> rst)
   }
   val forwardedRegs = new HashSet[Reg]
-  val forwardedMemReadPoints = new HashSet[(FunMem[_], FunRdIO[_])]
+  val forwardedMemReadPoints = new HashSet[(TransactionMem[_], FunRdIO[_])]
   val memNonForwardedWritePoints = new HashSet[FunWrIO[_]]
   def addForwardedReg(d: Reg) = {
     forwardedRegs += d
   }
-  def addForwardedMemReadPoint(m: FunMem[_], r: FunRdIO[_]) = {
-    forwardedMemReadPoints += ((m.asInstanceOf[FunMem[Data]], r.asInstanceOf[FunRdIO[Data]]))
+  def addForwardedMemReadPoint(m: TransactionMem[_], r: FunRdIO[_]) = {
+    forwardedMemReadPoints += ((m.asInstanceOf[TransactionMem[Data]], r.asInstanceOf[FunRdIO[Data]]))
   }
   def addNonForwardedMemWritePoint[T <: Data] (writePoint: FunWrIO[T]) = {
     memNonForwardedWritePoints += writePoint
@@ -66,7 +66,7 @@ object Component {
   var stages: HashMap[Node, Int] = new HashMap[Node, Int]()
   var cRegs: ArrayBuffer[Reg] = null
   var cMems: ArrayBuffer[Mem[ Data ]] = null
-  var cFunMems: ArrayBuffer[FunMem[ Data ]] = null
+  var cTransactionMems: ArrayBuffer[TransactionMem[ Data ]] = null
   def getStage(n: Node): Int = {
     if (stages.contains(n))
       return stages(n)
@@ -606,14 +606,9 @@ abstract class Component(resetSignal: Bool = null) {
     val unresolvedNodes = new HashSet[Node]
     val propagatedNodes = new HashMap[Node, ArrayBuffer[Node]]
     var oldPropagatedNodes = new HashMap[Node, ArrayBuffer[Node]]
-    //debug
-    var track :Node = null
     def propagateToProducers(cur: Node) = {  
       val currentNodeStages = coloredNodes(cur)
       var unMarkedChild = false
-      if(cur == track){
-        println("WTF3")
-      }
       for(n <- cur.inputs){
         if(!n.isInstanceOf[Mem[_]]){//don't propagate to Mem nodes
           //enqueue children if not enqueued already
@@ -677,9 +672,6 @@ abstract class Component(resetSignal: Bool = null) {
     def propagateToConsumers(cur: Node) = {  
       val currentNodeStages = coloredNodes(cur)
       var unMarkedChild = false
-      if(cur == track){
-        println("WTF2")
-      }
       if(consumerMap.contains(cur)){
         for(n <- consumerMap(cur)){
           if(!n.isInstanceOf[Mem[_]]){//don't propagate to Mem nodes
@@ -799,33 +791,6 @@ abstract class Component(resetSignal: Bool = null) {
   def insertPipelineRegisters2() = { 
     val coloredNodes = propagateStages()
     println("inserting pipeline registers")
-    /*for((node, stages) <- coloredNodes){
-      if(stages.length > 1){
-        println(node)
-        println(stages)
-      }
-      if(node.name == "io_imem_resp"){
-        println(node)
-        println(stages)
-        for(n <- node.inputs){
-          if(coloredNodes.contains(n)){
-            print("<>")
-            println(n)
-            print("<>")
-            println(coloredNodes(n))
-          }
-          for(nc <- n.inputs){
-            if(coloredNodes.contains(nc)){
-              print("<><>")
-              println(nc)
-              print("<><>")
-              println(coloredNodes(nc))
-            }
-          }
-        }
-      }
-    }*/
-    println("WTF")
     val consumerMap = getConsumers()
     var maxStage = 0
     for((node, stages) <- coloredNodes){
@@ -833,43 +798,55 @@ abstract class Component(resetSignal: Bool = null) {
         maxStage = stages.max
       }
     }
+    /*
     for(stage <- 0 until maxStage){
       pipelineReg(stage) = new ArrayBuffer[Reg]
+    }
+    for (i <- 0 until maxStage + 1) {
       val valid = Reg(resetVal = Bool(false))
       valids += valid
-      if(stage > 0){
-        valid := valids(stage - 1)
+      if(i > 0){
+        valid := valids(i - 1)
       } else {
         valid := Bool(true)
       }
-      valid.name_it("HuyValid_" + stage, true)
-    }
-    for (i <- 0 until maxStage + 1) {
+      valid.name_it("HuyValid_" + i, true)
       stalls += (i -> new ArrayBuffer[Bool])
       kills += (i -> new ArrayBuffer[Bool])
       speckills += (i -> new ArrayBuffer[Bool])
+    }*/
+    setNumStages(maxStage + 1)
+    for(stage <- 0 until pipeline.size) {
+      val valid = Reg(resetVal = Bool(false))
+      valids += valid
+      if (stage > 0) 
+        valid := valids(stage-1)
+      else
+        valid := Bool(true)
+      valid.name_it("HuyValid_" + stage, true)
     }
     for((node,stages) <- coloredNodes){
       Predef.assert(stages.length <= 2, stages)
       if(stages.length > 1){
-        println(((node,stages)))
         val stageDifference = Math.abs(stages(1) - stages(0))
         Predef.assert(stageDifference > 0, stageDifference)
-        var currentNodeOut = node
+        var actualNode = node
+        if(node.isInstanceOf[Op]){
+          actualNode = consumerMap(node)(0)
+        }
+        var currentNodeOut = actualNode
         for(i <- 0 until stageDifference){
-          println(currentNodeOut)
-          if(currentNodeOut.isInstanceOf[Op]){
-            currentNodeOut = consumerMap(currentNodeOut)(0)
-          }
-          val r = Reg(currentNodeOut.asInstanceOf[Data])
+          val r = Reg(resetVal = Bits(0))
           r := currentNodeOut.asInstanceOf[Bits]
           currentNodeOut.pipelinedVersion = r
           r.unPipelinedVersion = currentNodeOut
+          r.name_it("Huy_" + Math.min(stages(0),stages(1) + i) + "_" + currentNodeOut.name, true)
           pipelineReg(Math.min(stages(0),stages(1)) + i) += r.comp.asInstanceOf[Reg]
           currentNodeOut = r
         }
-        for(c <- consumerMap(node)){
-          val producerIndex = c.inputs.indexOf(node)
+        
+        for(c <- consumerMap(actualNode)){
+          val producerIndex = c.inputs.indexOf(actualNode)
           if(producerIndex > -1) c.inputs(producerIndex) = currentNodeOut
         }
       }
@@ -1108,7 +1085,7 @@ abstract class Component(resetSignal: Bool = null) {
 
     cRegs = new ArrayBuffer[Reg]
     cMems = new ArrayBuffer[Mem[Data]]
-    cFunMems = new ArrayBuffer[FunMem[Data]]
+    cTransactionMems = new ArrayBuffer[TransactionMem[Data]]
     compBfs(comp, 
             (n: Node) => {
               if (n.isMem) cMems += n.asInstanceOf[Mem[ Data ] ]
@@ -1116,8 +1093,8 @@ abstract class Component(resetSignal: Bool = null) {
             }
           )
     for(c <- comp.children){
-      if(c.isInstanceOf[FunMem[Data]]){
-        cFunMems += c.asInstanceOf[FunMem[Data]]
+      if(c.isInstanceOf[TransactionMem[Data]]){
+        cTransactionMems += c.asInstanceOf[TransactionMem[Data]]
       }
     }
     
@@ -1152,8 +1129,9 @@ abstract class Component(resetSignal: Bool = null) {
       }
     }
     // FunMem hazards
-    for (m <- cFunMems) {
-      for(writePoint <- m.io.writes){
+    for (m <- cTransactionMems) {
+      for(i <- 0 until m.io.writes.length){
+        val writePoint = m.io.writes(i)
         val writeAddr = writePoint.adr.inputs(0).inputs(1)
         val writeEn = writePoint.is.inputs(0).inputs(1)
         val writeData = writePoint.dat.inputs(0).inputs(1)

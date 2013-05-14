@@ -453,7 +453,7 @@ class FunStore[T <: Data](val depth: Int, numReads: Int, numWrites: Int)(data: =
   val io = new FunMemIO(depth, numReads, numWrites)( data )
 }
 
-class FunMem[T <: Data](depth: Int, numReads: Int, numVirtWrites: Int, numPhyWrites: Int)(data: => T) 
+class TransactionMem[T <: Data](depth: Int, numReads: Int, numVirtWrites: Int, numPhyWrites: Int)(data: => T) 
     extends FunStore(depth, numReads, numVirtWrites)(data) {
   val mem = Mem(depth)( data )
   def read(addr: UFix, idx: Int = 0): T = io.reads(idx).read(addr)
@@ -493,8 +493,6 @@ class FunMem[T <: Data](depth: Int, numReads: Int, numVirtWrites: Int, numPhyWri
       mem.write(addrs(i), datas(i).asInstanceOf[T])
     }
   }
-  /*for (write <- io.writes)
-    when (write.is) { mem.write(write.adr, write.dat) }*/
 }
 
 class FunVecIO[T <: Data](depth: Int, numReads: Int, numWrites: Int)(data: => T) extends FunMemIO(depth, numReads, numWrites)(data) {
